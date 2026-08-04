@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>AcadDwgBrowser.Core</RootNamespace>
+    <AssemblyName>AcadDwgBrowser.Core</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- AssemblyVersion 8.0.0.0 matches compile reference; AutoCAD probing fixed via AssemblyResolve -->
+    <PackageReference Include="System.Text.Json" Version="8.0.0" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+{
+  "ApiBaseUrl": "https://dev3.constrtodo.ru:3005",
+  "ApiKey": "",
+  "LoginEndpoint": "/login",
+  "SessionEndpoint": "/auth/session",
+  "LogoutEndpoint": "/auth/logout",
+  "ContentType": "production_drawings",
+  "ContentCategory": "",
+  "ContentListPath": "/content/list/{type}",
+  "ContentDetailPath": "/content/{id}",
+  "ContentFormPath": "/content/types/form/{code}",
+  "FileDownloadPath": "/api/v2/files/{fileID}",
+  "DownloadDirectory": "",
+  "TimeoutSeconds": 60
+}

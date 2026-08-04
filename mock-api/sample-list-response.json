@@ -1,0 +1,20 @@
+{
+  "files": [
+    {
+      "id": "demo-1",
+      "name": "Sample Floor Plan.dwg",
+      "downloadUrl": "/api/dwg/demo-1/download",
+      "sizeBytes": 1048576,
+      "updatedAt": "2026-08-01T10:00:00Z",
+      "project": "Demo"
+    },
+    {
+      "id": "demo-2",
+      "name": "Site Layout.dwg",
+      "downloadUrl": "https://api.example.com/api/dwg/demo-2/download",
+      "sizeBytes": 2097152,
+      "updatedAt": "2026-08-02T14:30:00Z",
+      "project": "Demo"
+    }
+  ]
+}

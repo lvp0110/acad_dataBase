@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Override on the machine that builds the plugin -->
+    <Acad2024Dir Condition="'$(Acad2024Dir)' == ''">C:\Program Files\Autodesk\AutoCAD 2024\</Acad2024Dir>
+    <Acad2025Dir Condition="'$(Acad2025Dir)' == ''">C:\Program Files\Autodesk\AutoCAD 2025\</Acad2025Dir>
+    <Acad2026Dir Condition="'$(Acad2026Dir)' == ''">C:\Program Files\Autodesk\AutoCAD 2026\</Acad2026Dir>
+  </PropertyGroup>
+</Project>

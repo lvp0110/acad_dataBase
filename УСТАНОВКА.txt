@@ -1,0 +1,34 @@
+AcadDwgBrowser — простая установка (Windows)
+============================================
+
+Нужно:
+  • Windows
+  • AutoCAD 2024, 2025 или 2026
+  • .NET SDK 8: https://dotnet.microsoft.com/download
+
+Установка (один шаг):
+  1. Скопируйте на Windows всю папку проекта "autocad database"
+     (должны быть Setup.bat, Setup.ps1, src\, bundle\)
+  2. Установите .NET SDK 8: https://dotnet.microsoft.com/download
+  3. Дважды нажмите Setup.bat
+  4. Должно появиться окно «Установка завершена»
+     Если ошибка — откроется Setup.log (пришлите его текст)
+  5. Полностью закройте и снова откройте AutoCAD
+  6. В командной строке AutoCAD введите: DWGBROWSER
+
+Setup.bat сам:
+  • проверит dotnet и структуру проекта
+  • скачает NuGet-пакеты AutoCAD.NET
+  • соберёт AcadDwgBrowser.dll (хотя бы одну версию)
+  • установит в %AppData%\Autodesk\ApplicationPlugins\
+  • покажет MessageBox и запишет Setup.log
+
+Если команда DWGBROWSER неизвестна:
+  • убедитесь, что Setup.bat завершился без ошибок
+  • проверьте наличие файла:
+    %AppData%\Autodesk\ApplicationPlugins\AcadDwgBrowser.bundle\Contents\2025\AcadDwgBrowser.dll
+    (для AutoCAD 2024 — папка Contents\2024)
+  • перезапустите AutoCAD полностью
+
+Настройка API:
+  %AppData%\Autodesk\ApplicationPlugins\AcadDwgBrowser.bundle\Contents\config.json

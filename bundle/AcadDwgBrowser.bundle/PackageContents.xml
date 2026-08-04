@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+  SchemaVersion="1.0"
+  AutodeskProduct="AutoCAD"
+  Name="DWG dB"
+  Description="Каталог производственных чертежей ConstrTodo (DWG dB)"
+  AppVersion="1.0.0"
+  ProductType="Application"
+  Author="AcadDwgBrowser"
+  FriendlyVersion="1.0.0"
+  ProductCode="{B7E2C1A4-9D55-4F20-8A11-77C0E2D4F901}"
+  UpgradeCode="{B7E2C1A4-9D55-4F20-8A11-77C0E2D4F900}">
+
+  <CompanyDetails Name="AcadDwgBrowser" Url="https://example.com" Email="dev@example.com" />
+
+  <Components Description="AutoCAD 2024 (.NET Framework 4.8)">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.3" SeriesMax="R24.3" />
+    <ComponentEntry
+      AppName="DWG dB"
+      ModuleName="./Contents/2024/AcadDwgBrowser.dll"
+      AppDescription="DWG dB — каталог DWG из ConstrTodo"
+      LoadOnAutoCADStartup="True"
+      LoadOnCommandInvocation="False"
+      AppType=".Net">
+      <Commands GroupName="DWG dB">
+        <Command Local="DWGDB" Global="DWGDB" />
+        <Command Local="DWGBROWSER" Global="DWGBROWSER" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+
+  <!-- AutoCAD 2025 (R25.0) and 2026 (R25.1) share the net8 build -->
+  <Components Description="AutoCAD 2025-2026 (.NET 8)">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R25.0" SeriesMax="R25.1" />
+    <ComponentEntry
+      AppName="DWG dB"
+      ModuleName="./Contents/2025/AcadDwgBrowser.dll"
+      AppDescription="DWG dB — каталог DWG из ConstrTodo"
+      LoadOnAutoCADStartup="True"
+      LoadOnCommandInvocation="False"
+      AppType=".Net">
+      <Commands GroupName="DWG dB">
+        <Command Local="DWGDB" Global="DWGDB" />
+        <Command Local="DWGBROWSER" Global="DWGBROWSER" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

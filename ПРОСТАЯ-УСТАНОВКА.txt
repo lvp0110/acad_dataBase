@@ -1,0 +1,24 @@
+ПРОСТАЯ УСТАНОВКА (Windows) — без Setup.bat и без сборки
+========================================================
+
+1. Скопируйте на Windows папку проекта ИЛИ файл:
+     dist\AcadDwgBrowser-1.0.0.zip
+
+2. Если ZIP — распакуйте.
+
+3. Запустите Install.bat в корне (двойной клик).
+
+4. Должно появиться окно «Установка завершена»
+   и файл на рабочем столе: AcadDwgBrowser-INSTALL-OK.txt
+
+5. Перезапустите AutoCAD → команда DWGBROWSER
+
+Плагин ставится сюда:
+  %AppData%\Autodesk\ApplicationPlugins\AcadDwgBrowser.bundle
+
+Внутри должны быть файлы:
+  Contents\2024\AcadDwgBrowser.dll
+  Contents\2025\AcadDwgBrowser.dll
+
+Если ApplicationPlugins пустая — Install.bat не отработал
+или запускали старый пакет БЕЗ dll.

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>AcadDwgBrowser.Plugin</RootNamespace>
+    <AssemblyName>AcadDwgBrowser</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <OutputPath>$(MSBuildThisFileDirectory)..\..\bundle\AcadDwgBrowser.bundle\Contents\2025\</OutputPath>
+    <OutDir>$(OutputPath)</OutDir>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\AcadDwgBrowser.Plugin\**\*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AcadDwgBrowser.Core\AcadDwgBrowser.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 25.0.x: AutoCAD 2025; binary-compatible with AutoCAD 2026 -->
+    <PackageReference Include="AutoCAD.NET" Version="25.0.1">
+      <PrivateAssets>all</PrivateAssets>
+      <ExcludeAssets>runtime</ExcludeAssets>
+      <IncludeAssets>compile; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>
