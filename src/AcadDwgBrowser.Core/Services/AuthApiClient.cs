@@ -137,12 +137,13 @@ namespace AcadDwgBrowser.Core.Services
                         var session = new AuthSession
                         {
                             AccessToken = access!,
-                            CsrfToken = csrf ?? string.Empty,
+                            CsrfToken = ApiHttpFactory.NormalizeToken(csrf) ?? string.Empty,
                             Email = email,
                             User = user
                         };
                         AuthSessionStore.Save(session);
-                        AuthDebugLog.Write("Login OK user=" + (user?.Email ?? email));
+                        AuthDebugLog.Write("Login OK user=" + (user?.Email ?? email) +
+                                           " csrfLen=" + session.CsrfToken.Length);
                         return session;
                     }
                 }
@@ -166,6 +167,21 @@ namespace AcadDwgBrowser.Core.Services
                 if (!response.IsSuccessStatusCode)
                     throw new InvalidOperationException(FormatApiError(response.StatusCode, responseText));
 
+                // Refresh tokens if server rotated cookies on /auth/session.
+                var baseUri = http.BaseAddress ?? new Uri(ApiHttpFactory.TrimSlash(_settings.ApiBaseUrl) + "/");
+                var requestUri = response.RequestMessage?.RequestUri ?? baseUri;
+                ExtractTokens(response, new CookieContainer(), baseUri, requestUri, responseText,
+                    out var access, out var csrf, out _);
+
+                if (ApiHttpFactory.IsRealToken(access))
+                    session.AccessToken = access!;
+
+                var normalizedCsrf = ApiHttpFactory.NormalizeToken(csrf);
+                if (!string.IsNullOrWhiteSpace(normalizedCsrf))
+                    session.CsrfToken = normalizedCsrf!;
+                else
+                    session.CsrfToken = ApiHttpFactory.NormalizeToken(session.CsrfToken) ?? session.CsrfToken;
+
                 var envelope = JsonSerializer.Deserialize<ApiEnvelope<UserFullInfo>>(responseText, JsonOptions);
                 if (envelope?.Data != null)
                     session.User = envelope.Data;
@@ -173,6 +189,30 @@ namespace AcadDwgBrowser.Core.Services
                 if (!string.IsNullOrWhiteSpace(session.User?.Email))
                     session.Email = session.User!.Email!;
 
+                AuthSessionStore.Save(session);
+                return session;
+            }
+        }
+
+        /// <summary>
+        /// Ensures CSRF is present and normalized before POST/PUT. Client-side only.
+        /// </summary>
+        public async Task<AuthSession> EnsureFreshCsrfAsync(
+            AuthSession session,
+            CancellationToken cancellationToken = default)
+        {
+            if (session == null) throw new ArgumentNullException(nameof(session));
+
+            session.CsrfToken = ApiHttpFactory.NormalizeToken(session.CsrfToken) ?? session.CsrfToken;
+
+            try
+            {
+                return await GetSessionAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("EnsureFreshCsrf fallback: " + ex.Message);
+                // Keep existing session if session probe fails — still use normalized CSRF.
                 AuthSessionStore.Save(session);
                 return session;
             }

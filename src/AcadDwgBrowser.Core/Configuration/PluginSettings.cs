@@ -38,6 +38,9 @@ namespace AcadDwgBrowser.Core.Configuration
         /// <summary>Template with {fileID} — swagger /api/v2/files/{fileID}</summary>
         public string FileDownloadPath { get; set; } = "/api/v2/files/{fileID}";
 
+        /// <summary>POST — swagger /content/{code}</summary>
+        public string ContentCreatePath { get; set; } = "/content/{code}";
+
         /// <summary>Legacy alias kept for older configs.</summary>
         public string ListEndpoint { get; set; } = "/content/list/production_drawings";
 
@@ -47,6 +50,19 @@ namespace AcadDwgBrowser.Core.Configuration
         public string DownloadDirectory { get; set; } = string.Empty;
 
         public int TimeoutSeconds { get; set; } = 60;
+
+        /// <summary>Defaults for POST /content/production_drawings form fields.</summary>
+        public string DefaultBrandCode { get; set; } = "bon";
+
+        public string DefaultModelCode { get; set; } = "albero";
+
+        public string DefaultGlobalCategoryCode { get; set; } = "acoustic";
+
+        public string DefaultProdDrawingEdgeCode { get; set; } = "2p_2pk";
+
+        public string DefaultProdDrawingPanelSizeCode { get; set; } = "1200_600_30";
+
+        public string DefaultProdDrawingPerforationCode { get; set; } = "block_2";
 
         public string ResolveDownloadDirectory()
         {
@@ -88,6 +104,11 @@ namespace AcadDwgBrowser.Core.Configuration
         public string BuildFileDownloadUrl(string fileId) =>
             (FileDownloadPath ?? "/api/v2/files/{fileID}")
                 .Replace("{fileID}", Uri.EscapeDataString(fileId ?? string.Empty))
+                .TrimStart('/');
+
+        public string BuildContentCreateUrl(string? code = null) =>
+            (ContentCreatePath ?? "/content/{code}")
+                .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))
                 .TrimStart('/');
     }
 }

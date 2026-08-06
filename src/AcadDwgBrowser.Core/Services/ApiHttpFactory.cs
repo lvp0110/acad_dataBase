@@ -20,15 +20,12 @@ namespace AcadDwgBrowser.Core.Services
                 throw new InvalidOperationException("В config.json не задан ApiBaseUrl.");
 
             var baseUri = new Uri(TrimSlash(settings.ApiBaseUrl) + "/");
-            var cookies = new CookieContainer();
 
-            if (session != null)
-                ApplySessionCookies(cookies, baseUri, session);
-
+            // Do not send cookies via CookieContainer — it can URL-encode csrf_token
+            // differently from our explicit Cookie / X-CSRF-Token headers and break CSRF checks.
             var handler = new HttpClientHandler
             {
-                CookieContainer = cookies,
-                UseCookies = true,
+                UseCookies = false,
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
             };
 
@@ -45,33 +42,6 @@ namespace AcadDwgBrowser.Core.Services
             return http;
         }
 
-        public static void ApplySessionCookies(CookieContainer cookies, Uri baseUri, AuthSession session)
-        {
-            if (IsRealToken(session.AccessToken))
-            {
-                try
-                {
-                    cookies.Add(baseUri, new Cookie(AccessTokenCookie, session.AccessToken, "/", baseUri.Host));
-                }
-                catch
-                {
-                    cookies.Add(baseUri, new Cookie(AccessTokenCookie, session.AccessToken) { Path = "/" });
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(session.CsrfToken))
-            {
-                try
-                {
-                    cookies.Add(baseUri, new Cookie(CsrfTokenCookie, session.CsrfToken, "/", baseUri.Host));
-                }
-                catch
-                {
-                    cookies.Add(baseUri, new Cookie(CsrfTokenCookie, session.CsrfToken) { Path = "/" });
-                }
-            }
-        }
-
         public static void ApplyAuthHeaders(HttpClient http, PluginSettings settings, AuthSession? session)
         {
             http.DefaultRequestHeaders.Remove("Authorization");
@@ -85,20 +55,42 @@ namespace AcadDwgBrowser.Core.Services
             if (!string.IsNullOrWhiteSpace(bearer))
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
 
-            if (session != null && !string.IsNullOrWhiteSpace(session.CsrfToken))
-                http.DefaultRequestHeaders.TryAddWithoutValidation(CsrfHeaderName, session.CsrfToken);
+            var csrf = session != null ? NormalizeToken(session.CsrfToken) : null;
+            if (!string.IsNullOrWhiteSpace(csrf))
+                http.DefaultRequestHeaders.TryAddWithoutValidation(CsrfHeaderName, csrf);
 
-            // Explicit Cookie header — more reliable than CookieContainer on non-standard ports (:3005).
+            // Explicit Cookie header — same decoded values as X-CSRF-Token (port :3005 safe).
             if (session != null)
             {
                 var parts = new System.Collections.Generic.List<string>();
                 if (IsRealToken(session.AccessToken))
-                    parts.Add(AccessTokenCookie + "=" + session.AccessToken);
-                if (!string.IsNullOrWhiteSpace(session.CsrfToken))
-                    parts.Add(CsrfTokenCookie + "=" + session.CsrfToken);
+                    parts.Add(AccessTokenCookie + "=" + session.AccessToken.Trim());
+                if (!string.IsNullOrWhiteSpace(csrf))
+                    parts.Add(CsrfTokenCookie + "=" + csrf);
                 if (parts.Count > 0)
                     http.DefaultRequestHeaders.TryAddWithoutValidation("Cookie", string.Join("; ", parts));
             }
+        }
+
+        /// <summary>Decode percent-encoding once so cookie and header stay identical.</summary>
+        public static string? NormalizeToken(string? token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+
+            var value = token.Trim();
+            try
+            {
+                // Only unescape when it looks percent-encoded; avoid corrupting '+' etc.
+                if (value.IndexOf('%') >= 0)
+                    value = Uri.UnescapeDataString(value);
+            }
+            catch
+            {
+                // keep trimmed raw
+            }
+
+            return value;
         }
 
         public static bool IsRealToken(string? token) =>

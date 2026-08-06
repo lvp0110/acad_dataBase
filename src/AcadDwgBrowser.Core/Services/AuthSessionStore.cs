@@ -37,7 +37,7 @@ namespace AcadDwgBrowser.Core.Services
                 return new AuthSession
                 {
                     AccessToken = dto.AccessToken ?? string.Empty,
-                    CsrfToken = dto.CsrfToken ?? string.Empty,
+                    CsrfToken = ApiHttpFactory.NormalizeToken(dto.CsrfToken) ?? dto.CsrfToken ?? string.Empty,
                     Email = dto.Email ?? string.Empty,
                     User = dto.User
                 };

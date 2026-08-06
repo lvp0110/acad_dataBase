@@ -23,6 +23,12 @@ namespace AcadDwgBrowser.Core.Models
 
         public string? GroupId { get; set; }
 
+        /// <summary>Local path after download / last open from catalog.</summary>
+        public string? LocalPath { get; set; }
+
+        /// <summary>Form field code for the DWG (e.g. file_dwg), used when uploading.</summary>
+        public string? DwgFieldCode { get; set; }
+
         public override string ToString() => Name;
     }
 }

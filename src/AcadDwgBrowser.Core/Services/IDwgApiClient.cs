@@ -15,5 +15,28 @@ namespace AcadDwgBrowser.Core.Services
             string destinationDirectory,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Updates content via PUT /content/{id}.
+        /// Rename: pass newName. Save DWG: pass localDwgPath (multipart).
+        /// </summary>
+        Task UpdateContentAsync(
+            string contentId,
+            string? newName = null,
+            string? localDwgPath = null,
+            string? dwgFieldCode = null,
+            IProgress<double>? progress = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Creates new content via POST /content/{code} with DWG file.
+        /// Returns created content id when the API provides it.
+        /// </summary>
+        Task<DwgFileInfo> CreateContentAsync(
+            string name,
+            string localDwgPath,
+            string? dwgFieldCode = null,
+            IProgress<double>? progress = null,
+            CancellationToken cancellationToken = default);
     }
 }

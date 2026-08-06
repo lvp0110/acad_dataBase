@@ -9,7 +9,14 @@
   "ContentListPath": "/content/list/{type}",
   "ContentDetailPath": "/content/{id}",
   "ContentFormPath": "/content/types/form/{code}",
+  "ContentCreatePath": "/content/{code}",
   "FileDownloadPath": "/api/v2/files/{fileID}",
   "DownloadDirectory": "",
-  "TimeoutSeconds": 60
+  "TimeoutSeconds": 60,
+  "DefaultBrandCode": "bon",
+  "DefaultModelCode": "albero",
+  "DefaultGlobalCategoryCode": "acoustic",
+  "DefaultProdDrawingEdgeCode": "2p_2pk",
+  "DefaultProdDrawingPanelSizeCode": "1200_600_30",
+  "DefaultProdDrawingPerforationCode": "block_2"
 }
