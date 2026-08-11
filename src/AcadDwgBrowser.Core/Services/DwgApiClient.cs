@@ -62,6 +62,7 @@ namespace AcadDwgBrowser.Core.Services
 
                 return payload.Items
                     .Select(MapContent)
+                    .Where(f => !string.IsNullOrWhiteSpace(f.Id))
                     .ToList();
             }
         }
@@ -140,10 +141,10 @@ namespace AcadDwgBrowser.Core.Services
                     file.Labels = resolved.Labels;
             }
 
-            var safeName = MakeSafeFileName(string.IsNullOrWhiteSpace(preferredName) ? file.Id + ".dwg" : preferredName);
-            if (!Path.HasExtension(safeName))
-                safeName += ".dwg";
-
+            var safeName = (!string.IsNullOrWhiteSpace(file.Id)
+                               ? file.Id.Replace("-", string.Empty)
+                               : Guid.NewGuid().ToString("N"))
+                           + ".dwg";
             var targetPath = Path.Combine(destinationDirectory, safeName);
             var tempPath = targetPath + ".partial";
 
@@ -153,15 +154,6 @@ namespace AcadDwgBrowser.Core.Services
                        cancellationToken).ConfigureAwait(false))
             {
                 await EnsureOkAsync(response).ConfigureAwait(false);
-
-                // Prefer server filename from Content-Disposition when present.
-                var serverName = TryGetFileNameFromDisposition(response.Content.Headers.ContentDisposition);
-                if (!string.IsNullOrWhiteSpace(serverName))
-                {
-                    safeName = MakeSafeFileName(serverName!);
-                    targetPath = Path.Combine(destinationDirectory, safeName);
-                    tempPath = targetPath + ".partial";
-                }
 
                 var total = response.Content.Headers.ContentLength;
                 using (var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
@@ -184,16 +176,28 @@ namespace AcadDwgBrowser.Core.Services
                 File.Delete(targetPath);
             File.Move(tempPath, targetPath);
 
+            try
+            {
+                var attrs = File.GetAttributes(targetPath);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(targetPath, attrs & ~FileAttributes.ReadOnly);
+            }
+            catch
+            {
+                // ignore
+            }
+
             progress?.Report(1.0);
             file.LocalPath = targetPath;
             return targetPath;
         }
 
-        public async Task UpdateContentAsync(
+        public async Task<DwgFileInfo> UpdateContentAsync(
             string contentId,
             string? newName = null,
             string? localDwgPath = null,
             string? dwgFieldCode = null,
+            ProductionDrawingLabels? labels = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default)
         {
@@ -202,57 +206,179 @@ namespace AcadDwgBrowser.Core.Services
 
             var hasRename = !string.IsNullOrWhiteSpace(newName);
             var hasFile = !string.IsNullOrWhiteSpace(localDwgPath);
-            if (!hasRename && !hasFile)
-                throw new ArgumentException("Укажите новое имя и/или путь к DWG.");
+            if (!hasRename && !hasFile && (labels == null || !labels.HasAnyValue))
+                throw new ArgumentException("Укажите новое имя, метки и/или путь к DWG.");
 
             if (hasFile && !File.Exists(localDwgPath!))
                 throw new FileNotFoundException("Локальный DWG не найден.", localDwgPath);
 
             var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+            var resolvedLabels = ProductionDrawingLabels.TryFromPayload(detail.Payload)
+                                 ?? new ProductionDrawingLabels();
+            if (labels != null)
+            {
+                if (!string.IsNullOrWhiteSpace(labels.UserUuid)) resolvedLabels.UserUuid = labels.UserUuid;
+                if (!string.IsNullOrWhiteSpace(labels.BrandCode)) resolvedLabels.BrandCode = labels.BrandCode;
+                if (!string.IsNullOrWhiteSpace(labels.ModelCode)) resolvedLabels.ModelCode = labels.ModelCode;
+                if (!string.IsNullOrWhiteSpace(labels.GlobalCategoryCode))
+                    resolvedLabels.GlobalCategoryCode = labels.GlobalCategoryCode;
+                if (!string.IsNullOrWhiteSpace(labels.EdgeCode)) resolvedLabels.EdgeCode = labels.EdgeCode;
+                if (!string.IsNullOrWhiteSpace(labels.PanelSizeCode))
+                    resolvedLabels.PanelSizeCode = labels.PanelSizeCode;
+                if (!string.IsNullOrWhiteSpace(labels.PerforationCode))
+                    resolvedLabels.PerforationCode = labels.PerforationCode;
+            }
+
+            var name = !string.IsNullOrWhiteSpace(newName)
+                ? newName!.Trim()
+                : (!string.IsNullOrWhiteSpace(detail.Name) ? detail.Name.Trim() : contentId);
+
+            // Try payload "code" as display name when detail.Name is empty.
+            if ((string.IsNullOrWhiteSpace(newName) || string.Equals(name, contentId, StringComparison.Ordinal))
+                && detail.Payload.ValueKind == JsonValueKind.Object
+                && detail.Payload.TryGetProperty("code", out var codeEl)
+                && codeEl.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(codeEl.GetString()))
+            {
+                name = codeEl.GetString()!.Trim();
+            }
+
+            // --- DWG replace: create new + delete old (PUT+file is broken on server) ---
+            if (hasFile)
+            {
+                if (resolvedLabels == null || !resolvedLabels.IsComplete)
+                    throw new InvalidOperationException(
+                        "Для сохранения DWG нужны все метки: "
+                        + (resolvedLabels?.MissingFieldName() ?? "метки"));
+
+                // Same "code" cannot be created twice — use a temporary unique code, then rename.
+                var tempCode = BuildUniqueTempCode(name);
+                AuthDebugLog.Write(
+                    "Replace content via create+delete oldId=" + contentId
+                    + " name=" + name + " tempCode=" + tempCode);
+
+                var created = await CreateContentAsync(
+                        tempCode,
+                        localDwgPath!,
+                        resolvedLabels,
+                        dwgFieldCode,
+                        progress,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (string.IsNullOrWhiteSpace(created.Id))
+                {
+                    created.Id = await ResolveNewestContentIdByNameAsync(tempCode, cancellationToken)
+                        .ConfigureAwait(false) ?? string.Empty;
+                }
+
+                if (string.IsNullOrWhiteSpace(created.Id))
+                {
+                    throw new InvalidOperationException(
+                        "Новая версия чертежа создана, но сервер не вернул Id. "
+                        + "Старый черновик не удалён — обновите список и проверьте дубликаты.");
+                }
+
+                try
+                {
+                    await DeleteContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    AuthDebugLog.Write("Delete old content after replace failed: " + ex.Message);
+                }
+
+                // Restore the original display name (PUT without file works).
+                try
+                {
+                    await PutContentMetaAsync(
+                            created.Id,
+                            name,
+                            resolvedLabels,
+                            created.DwgFieldCode ?? dwgFieldCode,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    created.Name = name;
+                }
+                catch (Exception ex)
+                {
+                    AuthDebugLog.Write("Rename after replace failed: " + ex.Message);
+                    created.Name = tempCode;
+                }
+
+                created.LocalPath = localDwgPath;
+                created.Status = "draft";
+                created.Labels = resolvedLabels.Clone();
+                progress?.Report(1.0);
+                return created;
+            }
+
+            // --- Labels / rename only: PUT without file (works) ---
             var fieldCode = await ResolveDwgFieldCodeAsync(detail, dwgFieldCode, cancellationToken)
                 .ConfigureAwait(false);
-            var payloadJson = BuildUpdatePayloadJson(detail, newName, stripFileFields: hasFile, fieldCode);
+            await PutContentMetaAsync(
+                    contentId,
+                    name,
+                    labels ?? resolvedLabels,
+                    fieldCode,
+                    cancellationToken,
+                    progress)
+                .ConfigureAwait(false);
+
+            return new DwgFileInfo
+            {
+                Id = contentId,
+                Name = name,
+                Status = detail.Status ?? "draft",
+                ContentType = detail.ContentType,
+                DwgFieldCode = fieldCode,
+                Labels = (labels ?? resolvedLabels)?.Clone()
+            };
+        }
+
+        private async Task PutContentMetaAsync(
+            string contentId,
+            string name,
+            ProductionDrawingLabels? labels,
+            string? dwgFieldCode,
+            CancellationToken cancellationToken,
+            IProgress<double>? progress = null)
+        {
+            var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+            var fieldCode = await ResolveDwgFieldCodeAsync(detail, dwgFieldCode, cancellationToken)
+                .ConfigureAwait(false);
+            var payloadJson = BuildUpdatePayloadJson(
+                detail, name, stripFileFields: false, fieldCode, labels);
 
             var endpoint = _settings.BuildContentDetailUrl(contentId);
-            progress?.Report(0.05);
+            progress?.Report(0.2);
 
             using (var form = new MultipartFormDataContent())
             {
-                // Some servers expect payload as plain text JSON string (not application/json part).
                 form.Add(new StringContent(payloadJson, Encoding.UTF8), "payload");
-
-                if (hasFile)
-                {
-                    var fileName = Path.GetFileName(localDwgPath!);
-                    if (string.IsNullOrWhiteSpace(fileName))
-                        fileName = (newName ?? detail.Name ?? "drawing") + ".dwg";
-                    if (!fileName.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
-                        fileName += ".dwg";
-
-                    // Read with ReadWrite share — AutoCAD may still hold the file.
-                    var bytes = await ReadFileSharedAsync(localDwgPath!, cancellationToken)
-                        .ConfigureAwait(false);
-                    progress?.Report(0.35);
-
-                    var fileContent = new ByteArrayContent(bytes);
-                    fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-                    var partName = string.IsNullOrWhiteSpace(fieldCode) ? "file" : fieldCode!;
-                    form.Add(fileContent, partName, fileName);
-                }
-
-                progress?.Report(0.45);
+                AuthDebugLog.Write("PUT " + endpoint + " (no file) payload=" + Truncate(payloadJson));
 
                 using (var request = new HttpRequestMessage(HttpMethod.Put, endpoint) { Content = form })
                 using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
                 {
-                    await EnsureOkAsync(response).ConfigureAwait(false);
+                    var status = (int)response.StatusCode;
                     var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    AuthDebugLog.Write("Update content HTTP " + status + " body=" + Truncate(body));
+                    if (!response.IsSuccessStatusCode)
+                        throw new InvalidOperationException(ExtractErrorMessage(body, status));
                     EnsureApiSuccess(body);
                 }
             }
 
             progress?.Report(1.0);
+        }
+
+        private static string BuildUniqueTempCode(string name)
+        {
+            var baseName = string.IsNullOrWhiteSpace(name) ? "drawing" : name.Trim();
+            if (baseName.Length > 40)
+                baseName = baseName.Substring(0, 40);
+            return baseName + " #" + Guid.NewGuid().ToString("N").Substring(0, 6);
         }
 
         public async Task DeleteContentAsync(
@@ -551,6 +677,23 @@ namespace AcadDwgBrowser.Core.Services
             return response;
         }
 
+        private async Task<string?> ResolveNewestContentIdByNameAsync(
+            string name,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return null;
+
+            var list = await ListFilesAsync(cancellationToken).ConfigureAwait(false);
+            var match = list
+                .Where(f =>
+                    !string.IsNullOrWhiteSpace(f.Id)
+                    && string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(f => f.UpdatedAt ?? DateTimeOffset.MinValue)
+                .FirstOrDefault();
+            return match?.Id;
+        }
+
         private static string ExtractErrorMessage(string body, int statusCode)
         {
             try
@@ -721,7 +864,8 @@ namespace AcadDwgBrowser.Core.Services
             ContentFullInfo detail,
             string? newName,
             bool stripFileFields,
-            string? dwgFieldCode)
+            string? dwgFieldCode,
+            ProductionDrawingLabels? labels = null)
         {
             JsonObject root;
             if (detail.Payload.ValueKind == JsonValueKind.Object)
@@ -733,25 +877,147 @@ namespace AcadDwgBrowser.Core.Services
                 root = new JsonObject();
             }
 
+            // production_drawings uses "code" as the document name field.
             var name = !string.IsNullOrWhiteSpace(newName) ? newName!.Trim() : detail.Name;
             if (!string.IsNullOrWhiteSpace(name))
+            {
+                root["code"] = name;
                 root["name"] = name;
+            }
+
+            if (labels != null && labels.HasAnyValue)
+            {
+                if (!string.IsNullOrWhiteSpace(labels.UserUuid))
+                    root["user_uuid"] = labels.UserUuid;
+                if (!string.IsNullOrWhiteSpace(labels.BrandCode))
+                    root["brand_code"] = labels.BrandCode;
+                if (!string.IsNullOrWhiteSpace(labels.ModelCode))
+                    root["model_code"] = labels.ModelCode;
+                if (!string.IsNullOrWhiteSpace(labels.GlobalCategoryCode))
+                    root["global_category_code"] = labels.GlobalCategoryCode;
+                if (!string.IsNullOrWhiteSpace(labels.EdgeCode))
+                    root["prod_drawing_edge_code"] = labels.EdgeCode;
+                if (!string.IsNullOrWhiteSpace(labels.PanelSizeCode))
+                    root["prod_drawing_panel_size_code"] = labels.PanelSizeCode;
+                if (!string.IsNullOrWhiteSpace(labels.PerforationCode))
+                    root["prod_drawing_perforation_code"] = labels.PerforationCode;
+            }
 
             if (stripFileFields)
             {
+                // Server deletes previous files by ID when a new multipart file arrives.
+                // Live payload often has download_url only (no file_id) → DeleteFilesByIDs(NULL).
+                // Replace file nodes with explicit {file_id} entries extracted from URLs.
+                var field = string.IsNullOrWhiteSpace(dwgFieldCode) ? "file_dwg" : dwgFieldCode!.Trim();
+                var ids = ExtractFileIdsFromPayload(detail.Payload, field);
+
                 var keysToClear = new List<string>();
                 foreach (var prop in root)
                 {
                     var key = prop.Key;
-                    if (IsFileFieldKey(key, dwgFieldCode) || LooksLikeFileNode(prop.Value))
+                    if (IsFileFieldKey(key, field) || LooksLikeFileNode(prop.Value))
                         keysToClear.Add(key);
                 }
 
                 foreach (var key in keysToClear)
                     root.Remove(key);
+
+                if (ids.Count > 0)
+                {
+                    var arr = new JsonArray();
+                    foreach (var id in ids)
+                        arr.Add(new JsonObject { ["file_id"] = id });
+                    root[field] = arr;
+                }
             }
 
             return root.ToJsonString();
+        }
+
+        private static List<string> ExtractFileIdsFromPayload(JsonElement payload, string fieldCode)
+        {
+            var ids = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void Add(string? id)
+            {
+                if (string.IsNullOrWhiteSpace(id))
+                    return;
+                id = id.Trim();
+                if (seen.Add(id))
+                    ids.Add(id);
+            }
+
+            void FromObject(JsonElement obj)
+            {
+                if (obj.TryGetProperty("file_id", out var fid) && fid.ValueKind == JsonValueKind.String)
+                    Add(fid.GetString());
+                else if (obj.TryGetProperty("fileId", out var fid2) && fid2.ValueKind == JsonValueKind.String)
+                    Add(fid2.GetString());
+                else if (obj.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                {
+                    var s = id.GetString();
+                    if (s != null && s.Length == 36 && s.IndexOf('-') > 0)
+                        Add(s);
+                }
+
+                if (obj.TryGetProperty("download_url", out var url) && url.ValueKind == JsonValueKind.String)
+                    Add(TryExtractUuid(url.GetString()));
+                else if (obj.TryGetProperty("downloadUrl", out var url2) && url2.ValueKind == JsonValueKind.String)
+                    Add(TryExtractUuid(url2.GetString()));
+            }
+
+            if (payload.ValueKind != JsonValueKind.Object)
+                return ids;
+
+            JsonElement fieldEl = default;
+            var hasField = payload.TryGetProperty(fieldCode, out fieldEl)
+                           || payload.TryGetProperty("file_dwg", out fieldEl);
+
+            if (!hasField)
+            {
+                // Fallback: any file-like nodes via extractor.
+                foreach (var f in ContentPayloadFileExtractor.Extract(payload))
+                {
+                    if (!string.IsNullOrWhiteSpace(f.FileId))
+                        Add(f.FileId);
+                    else
+                        Add(TryExtractUuid(f.DownloadUrl));
+                }
+
+                return ids;
+            }
+
+            if (fieldEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in fieldEl.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object)
+                        FromObject(item);
+                    else if (item.ValueKind == JsonValueKind.String)
+                        Add(item.GetString());
+                }
+            }
+            else if (fieldEl.ValueKind == JsonValueKind.Object)
+            {
+                FromObject(fieldEl);
+            }
+            else if (fieldEl.ValueKind == JsonValueKind.String)
+            {
+                Add(fieldEl.GetString());
+            }
+
+            return ids;
+        }
+
+        private static string? TryExtractUuid(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return null;
+            var m = System.Text.RegularExpressions.Regex.Match(
+                text,
+                @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+            return m.Success ? m.Value : null;
         }
 
         private static bool IsFileFieldKey(string key, string? dwgFieldCode)
@@ -830,8 +1096,8 @@ namespace AcadDwgBrowser.Core.Services
             return new DwgFileInfo
             {
                 Id = c.Id ?? string.Empty,
-                Name = string.IsNullOrWhiteSpace(c.Name) ? (c.Id ?? "content") : c.Name,
-                Status = c.Status,
+                Name = ResolveDisplayName(c),
+                Status = string.IsNullOrWhiteSpace(c.Status) ? "draft" : c.Status,
                 ContentType = c.ContentType,
                 GroupId = c.GroupId,
                 UpdatedAt = updated,
@@ -839,6 +1105,26 @@ namespace AcadDwgBrowser.Core.Services
                 DownloadUrl = string.Empty
             };
         }
+
+        private static string ResolveDisplayName(ContentInfo c)
+        {
+            if (!string.IsNullOrWhiteSpace(c.Name) && !LooksLikeUuid(c.Name))
+                return c.Name.Trim();
+
+            if (!string.IsNullOrWhiteSpace(c.Code) && !LooksLikeUuid(c.Code!))
+                return c.Code!.Trim();
+
+            if (!string.IsNullOrWhiteSpace(c.Id))
+            {
+                var shortId = c.Id.Length > 8 ? c.Id.Substring(0, 8) : c.Id;
+                return "Без имени (" + shortId + ")";
+            }
+
+            return "Без имени";
+        }
+
+        private static bool LooksLikeUuid(string value) =>
+            value.Length == 36 && value.IndexOf('-') == 8;
 
         private Uri ResolveUrl(string url)
         {

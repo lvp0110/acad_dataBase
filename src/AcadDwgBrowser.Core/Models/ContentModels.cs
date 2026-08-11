@@ -35,6 +35,10 @@ namespace AcadDwgBrowser.Core.Models
         [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
+        /// <summary>Document code / display title used by production_drawings.</summary>
+        [JsonPropertyName("code")]
+        public string? Code { get; set; }
+
         [JsonPropertyName("content_type")]
         public string? ContentType { get; set; }
 

@@ -21,20 +21,68 @@ namespace AcadDwgBrowser.Plugin.Services
             if (!File.Exists(path))
                 throw new FileNotFoundException("DWG не найден.", path);
 
+            if (!readOnly)
+                ClearReadOnlyAttribute(path);
+
             var docs = AcApp.DocumentManager;
-            if (docs.IsApplicationContext)
+            Exception? error = null;
+
+            void Open()
             {
-                docs.Open(path, readOnly);
-                return;
+                try
+                {
+                    docs.Open(path, readOnly);
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                }
             }
 
-            // Queue open on the application thread. Do not Wait() — that can deadlock AutoCAD.
-            docs.ExecuteInApplicationContext(
-                _ => { docs.Open(path, readOnly); },
-                null);
+            // Modeless palette usually runs in application context — open synchronously
+            // so the active document is ready before Save / edit.
+            if (docs.IsApplicationContext)
+            {
+                Open();
+            }
+            else
+            {
+                // Queue to application thread and wait briefly. Palette/UI callers are
+                // typically already in app context; this path is for command context.
+                using (var done = new ManualResetEventSlim(false))
+                {
+                    docs.ExecuteInApplicationContext(
+                        _ =>
+                        {
+                            try
+                            {
+                                Open();
+                            }
+                            finally
+                            {
+                                done.Set();
+                            }
+                        },
+                        null);
 
-            // Give AutoCAD a short moment to activate the document when possible.
-            Thread.Sleep(50);
+                    if (!done.Wait(TimeSpan.FromSeconds(30)))
+                        throw new TimeoutException("Таймаут открытия чертежа в AutoCAD.");
+                }
+            }
+
+            if (error != null)
+                throw error;
+
+            // Verify read/write mode when edit was requested.
+            if (!readOnly)
+            {
+                var doc = docs.MdiActiveDocument;
+                if (doc != null && doc.IsReadOnly)
+                {
+                    throw new InvalidOperationException(
+                        "AutoCAD открыл чертёж только для чтения. Закройте файл в других окнах и повторите.");
+                }
+            }
         }
 
         public static string? TryGetActiveDocumentPath()
@@ -82,15 +130,30 @@ namespace AcadDwgBrowser.Plugin.Services
                     if (doc == null)
                         throw new InvalidOperationException("Нет активного чертежа в AutoCAD.");
 
+                    if (doc.IsReadOnly)
+                        throw new InvalidOperationException(
+                            "Чертёж открыт только для чтения — сохранение невозможно.");
+
                     var path = preferredPath;
-                    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
                         path = doc.Name;
 
-                    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    if (string.IsNullOrWhiteSpace(path))
+                        throw new InvalidOperationException(
+                            "Активный чертёж ещё не сохранён на диск.");
+
+                    // Unsaved DrawingN.dwg has no real path yet.
+                    if (!File.Exists(path) && !Path.IsPathRooted(path))
                         throw new InvalidOperationException(
                             "Активный чертёж ещё не сохранён на диск.");
 
                     path = Path.GetFullPath(path);
+                    ClearReadOnlyAttribute(path);
+
+                    var dir = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(dir))
+                        Directory.CreateDirectory(dir);
+
                     using (doc.LockDocument())
                     {
                         doc.Database.SaveAs(path, true, DwgVersion.Current, doc.Database.SecurityParameters);
@@ -104,10 +167,10 @@ namespace AcadDwgBrowser.Plugin.Services
                 }
             }
 
-            if (docs.IsApplicationContext)
-                Save();
-            else
-                docs.ExecuteInApplicationContext(_ => Save(), null);
+            // Always save on the calling AutoCAD/UI thread with LockDocument.
+            // Do NOT fire-and-forget ExecuteInApplicationContext — that returns
+            // before Save finishes and breaks the Save button.
+            Save();
 
             if (error != null)
                 throw error;
@@ -140,6 +203,12 @@ namespace AcadDwgBrowser.Plugin.Services
                     if (doc == null)
                         throw new InvalidOperationException("Нет активного чертежа в AutoCAD.");
 
+                    if (doc.IsReadOnly)
+                        throw new InvalidOperationException(
+                            "Чертёж открыт только для чтения — сохранение невозможно.");
+
+                    ClearReadOnlyAttribute(targetPath);
+
                     using (doc.LockDocument())
                     {
                         doc.Database.SaveAs(
@@ -154,15 +223,25 @@ namespace AcadDwgBrowser.Plugin.Services
                 }
             }
 
-            if (docs.IsApplicationContext)
-                Save();
-            else
-                docs.ExecuteInApplicationContext(_ => Save(), null);
+            Save();
 
             if (error != null)
                 throw error;
 
             return result ?? throw new InvalidOperationException("Не удалось сохранить чертёж.");
+        }
+
+        public static bool IsActiveDocumentReadOnly()
+        {
+            try
+            {
+                var doc = AcApp.DocumentManager.MdiActiveDocument;
+                return doc == null || doc.IsReadOnly;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         public static string? TryGetActiveDocumentTitle()
@@ -212,6 +291,23 @@ namespace AcadDwgBrowser.Plugin.Services
         public static void UnsubscribeDocumentActivated(DocumentCollectionEventHandler handler)
         {
             AcApp.DocumentManager.DocumentActivated -= handler;
+        }
+
+        private static void ClearReadOnlyAttribute(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return;
+
+                var attrs = File.GetAttributes(path);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+            }
+            catch
+            {
+                // best-effort — Save/Open will report a clearer error if needed
+            }
         }
     }
 }

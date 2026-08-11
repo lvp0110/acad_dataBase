@@ -79,8 +79,11 @@ namespace AcadDwgBrowser.Plugin.Services
 
             if (string.IsNullOrWhiteSpace(localPath))
             {
-                // No reliable active path — still allow actions on the last catalog drawing
-                // if that file exists on disk (typical right after Open from palette).
+                // Only bind LastOpened when AutoCAD has not reported another document name yet.
+                // Do not steal a new DrawingN.dwg session.
+                if (!AcadDocumentService.HasActiveDocument())
+                    return false;
+
                 if (File.Exists(last.LocalPath))
                 {
                     file = last;
@@ -108,13 +111,27 @@ namespace AcadDwgBrowser.Plugin.Services
         }
 
         /// <summary>
-        /// Drawing targeted by Rename/Save: active catalog match, else last opened from catalog.
+        /// Drawing targeted by Rename/Save: active catalog match only.
+        /// If AutoCAD has an unrelated/new document, returns false so UI creates a new draft.
+        /// LastOpened is used only when there is no conflicting active document.
         /// </summary>
         public static bool TryGetCurrent(out DwgFileInfo file, out string localPath)
         {
             if (TryGetActive(out file, out localPath))
                 return true;
 
+            var hasDoc = AcadDocumentService.HasActiveDocument();
+            var activePath = AcadDocumentService.TryGetActiveDocumentPath();
+
+            // New DrawingN.dwg or any unrelated open file must NOT inherit LastOpened.
+            if (hasDoc && !string.IsNullOrWhiteSpace(activePath) && !TryGet(activePath!, out _))
+            {
+                file = null!;
+                localPath = string.Empty;
+                return false;
+            }
+
+            // No active document, or path not reported yet right after Open from catalog.
             var last = LastOpened;
             if (last?.LocalPath == null || !File.Exists(last.LocalPath))
             {
@@ -126,6 +143,15 @@ namespace AcadDwgBrowser.Plugin.Services
             file = last;
             localPath = last.LocalPath;
             return true;
+        }
+
+        /// <summary>True when active AutoCAD drawing is not linked to a catalog item.</summary>
+        public static bool IsActiveUnlinkedDocument()
+        {
+            if (!AcadDocumentService.HasActiveDocument())
+                return false;
+
+            return !TryGetActive(out _, out _);
         }
 
         private static string? TryNormalize(string path)

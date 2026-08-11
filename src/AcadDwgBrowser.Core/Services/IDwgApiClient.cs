@@ -24,14 +24,16 @@ namespace AcadDwgBrowser.Core.Services
             CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Updates content via PUT /content/{id}.
-        /// Rename: pass newName. Save DWG: pass localDwgPath (multipart).
+        /// Updates content. Labels/rename: PUT /content/{id} without file.
+        /// DWG replace: API PUT+file is broken server-side, so create new + delete old.
+        /// Returns the resulting catalog item (may have a new Id after DWG replace).
         /// </summary>
-        Task UpdateContentAsync(
+        Task<DwgFileInfo> UpdateContentAsync(
             string contentId,
             string? newName = null,
             string? localDwgPath = null,
             string? dwgFieldCode = null,
+            ProductionDrawingLabels? labels = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default);
 

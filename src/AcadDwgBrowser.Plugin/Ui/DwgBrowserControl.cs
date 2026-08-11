@@ -674,18 +674,7 @@ namespace AcadDwgBrowser.Plugin.Ui
 
             try
             {
-                PluginApp.Settings.ContentType = "production_drawings";
-                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
-                {
-                    var filtersTask = client.GetFiltersAsync(_cts.Token);
-                    var filesTask = client.ListFilesAsync(_cts.Token);
-                    await Task.WhenAll(filtersTask, filesTask).ConfigureAwait(true);
-
-                    BindFilters(filtersTask.Result);
-                    _allFiles = new List<DwgFileInfo>(filesTask.Result);
-                    ApplyFilter();
-                    SetStatus($"Производственные чертежи: {_allFiles.Count}");
-                }
+                await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
             }
             catch (OperationCanceledException)
             {
@@ -700,6 +689,22 @@ namespace AcadDwgBrowser.Plugin.Ui
             finally
             {
                 SetBusy(false);
+            }
+        }
+
+        private async Task RefreshCatalogListAsync(CancellationToken cancellationToken)
+        {
+            PluginApp.Settings.ContentType = "production_drawings";
+            using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session!))
+            {
+                var filtersTask = client.GetFiltersAsync(cancellationToken);
+                var filesTask = client.ListFilesAsync(cancellationToken);
+                await Task.WhenAll(filtersTask, filesTask).ConfigureAwait(true);
+
+                BindFilters(filtersTask.Result);
+                _allFiles = new List<DwgFileInfo>(filesTask.Result);
+                ApplyFilter();
+                SetStatus($"Производственные чертежи: {_allFiles.Count}");
             }
         }
 
@@ -739,7 +744,8 @@ namespace AcadDwgBrowser.Plugin.Ui
                 }
 
                 SetStatus("Открытие в AutoCAD…");
-                AcadDocumentService.OpenDwg(localPath, readOnly: false);
+                var editable = CanEditContent(file.Status);
+                AcadDocumentService.OpenDwg(localPath, readOnly: !editable);
                 file.LocalPath = localPath;
                 OpenDrawingRegistry.Register(localPath, file);
 
@@ -748,8 +754,14 @@ namespace AcadDwgBrowser.Plugin.Ui
                 if (!string.IsNullOrWhiteSpace(activePath))
                     OpenDrawingRegistry.Register(activePath!, file);
 
-                AcadDocumentService.WriteMessage("Открыт файл: " + localPath);
-                SetStatus("Открыто: " + file.Name);
+                AcadDocumentService.WriteMessage(
+                    editable
+                        ? "Открыт файл: " + localPath
+                        : "Открыт только для просмотра (" + (file.Status ?? "—") + "): " + localPath);
+                SetStatus(
+                    editable
+                        ? "Открыто: " + file.Name
+                        : "Просмотр: " + file.Name + " [" + (file.Status ?? "—") + "]");
                 ApplyLabelsToUi(file.Labels);
                 UpdateActiveLabel();
 
@@ -805,13 +817,22 @@ namespace AcadDwgBrowser.Plugin.Ui
 
             var file = _list.SelectedItems[0].Tag as DwgFileInfo;
             if (file == null || string.IsNullOrWhiteSpace(file.Id))
-                return;
-
-            if (!IsDraftStatus(file.Status))
             {
                 MessageBox.Show(
                     this,
-                    "Удалять можно только конструкции в статусе draft.\nТекущий статус: "
+                    "У выбранной записи нет Id — удаление через API невозможно.\n"
+                    + "Нажмите «Обновить» и попробуйте снова.",
+                    "Удаление",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!CanDeleteContent(file.Status))
+            {
+                MessageBox.Show(
+                    this,
+                    "Удалять можно только конструкции в статусе draft (черновик).\nТекущий статус: "
                     + (file.Status ?? "—"),
                     "Удаление",
                     MessageBoxButtons.OK,
@@ -838,12 +859,23 @@ namespace AcadDwgBrowser.Plugin.Ui
                 await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
                 using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                 {
-                    await client.DeleteContentAsync(file.Id, _cts.Token).ConfigureAwait(true);
+                    try
+                    {
+                        await client.DeleteContentAsync(file.Id, _cts.Token).ConfigureAwait(true);
+                    }
+                    catch (Exception ex) when (IsAlreadyDeletedError(ex))
+                    {
+                        // Already gone on server — still drop from UI.
+                    }
                 }
+
+                _allFiles.RemoveAll(f =>
+                    string.Equals(f.Id, file.Id, StringComparison.OrdinalIgnoreCase));
+                ApplyFilter();
 
                 AcadDocumentService.WriteMessage("Удалено: " + file.Name);
                 SetStatus("Удалено: " + file.Name);
-                await ReloadAsync().ConfigureAwait(true);
+                await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
             }
             catch (OperationCanceledException)
             {
@@ -860,18 +892,53 @@ namespace AcadDwgBrowser.Plugin.Ui
             }
         }
 
+        private static bool IsAlreadyDeletedError(Exception ex)
+        {
+            var msg = ex.Message ?? string.Empty;
+            return msg.IndexOf("no rows", StringComparison.OrdinalIgnoreCase) >= 0
+                   || msg.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0
+                   || msg.IndexOf("не найден", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private static bool IsDraftStatus(string? status) =>
-            string.Equals(status?.Trim(), "draft", StringComparison.OrdinalIgnoreCase);
+            NormalizeStatus(status) == "draft";
+
+        private static bool IsRejectedStatus(string? status) =>
+            NormalizeStatus(status) == "rejected";
+
+        private static string NormalizeStatus(string? status)
+        {
+            var s = (status ?? string.Empty).Trim().ToLowerInvariant();
+            if (s == "draft" || s == "черновик")
+                return "draft";
+            if (s == "rejected" || s == "отклонен" || s == "отклонён")
+                return "rejected";
+            return s;
+        }
+
+        /// <summary>draft / rejected — можно смотреть и редактировать.</summary>
+        private static bool CanEditContent(string? status) =>
+            IsDraftStatus(status) || IsRejectedStatus(status);
+
+        /// <summary>Только draft — можно удалять.</summary>
+        private static bool CanDeleteContent(string? status) =>
+            IsDraftStatus(status);
 
         private void UpdateCatalogActionButtons()
         {
             var hasSelection = !_busy && _list.SelectedItems.Count > 0;
             _openButton.Enabled = hasSelection;
 
-            var canDelete = false;
-            if (hasSelection && _list.SelectedItems[0].Tag is DwgFileInfo file)
-                canDelete = IsDraftStatus(file.Status);
-            _deleteButton.Enabled = canDelete;
+            DwgFileInfo? file = null;
+            if (hasSelection)
+                file = _list.SelectedItems[0].Tag as DwgFileInfo;
+
+            _deleteButton.Enabled = file != null && CanDeleteContent(file.Status);
+
+            if (file != null && !CanEditContent(file.Status))
+                _openButton.Text = "Просмотр";
+            else
+                _openButton.Text = "Открыть";
         }
 
         private async Task RenameActiveAsync()
@@ -895,6 +962,18 @@ namespace AcadDwgBrowser.Plugin.Ui
             if (OpenDrawingRegistry.TryGetCurrent(out var file, out _)
                 && !string.IsNullOrWhiteSpace(file.Id))
             {
+                if (!CanEditContent(file.Status))
+                {
+                    MessageBox.Show(
+                        this,
+                        "Редактирование недоступно для статуса «" + (file.Status ?? "—")
+                        + "». Доступен только просмотр.",
+                        "Переименование",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
                 var newName = PromptName(file.Name);
                 if (newName == null)
                     return;
@@ -908,9 +987,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                 try
                 {
                     await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
+                    DwgFileInfo updated;
                     using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                     {
-                        await client.UpdateContentAsync(
+                        updated = await client.UpdateContentAsync(
                                 file.Id,
                                 newName: newName,
                                 localDwgPath: null,
@@ -919,10 +999,9 @@ namespace AcadDwgBrowser.Plugin.Ui
                             .ConfigureAwait(true);
                     }
 
-                    file.Name = newName;
-                    OpenDrawingRegistry.Update(file);
+                    updated.LocalPath = file.LocalPath;
+                    ApplyUpdatedCatalogItem(file.Id, updated);
                     OpenDrawingRegistry.PendingNewName = newName;
-                    UpdateListItemName(file);
                     UpdateActiveLabel();
                     AcadDocumentService.WriteMessage("Переименовано: " + newName);
                     SetStatus("Переименовано: " + newName);
@@ -968,29 +1047,89 @@ namespace AcadDwgBrowser.Plugin.Ui
                 return;
             }
 
-            if (!AcadDocumentService.HasActiveDocument())
+            TryGetSelectedLabels(out var labels, out _);
+            var hasDoc = AcadDocumentService.HasActiveDocument();
+
+            // New / unlinked AutoCAD drawing → create draft in catalog.
+            if (hasDoc && OpenDrawingRegistry.IsActiveUnlinkedDocument())
             {
-                MessageBox.Show(this, "Нет активного чертежа в AutoCAD.", "Сохранение",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                await SaveNewDrawingAsync().ConfigureAwait(true);
                 return;
             }
 
-            // Update existing catalog drawing.
+            // Existing catalog drawing (open in AutoCAD or last opened with local file).
             if (OpenDrawingRegistry.TryGetCurrent(out var file, out var localPath)
                 && !string.IsNullOrWhiteSpace(file.Id))
             {
-                SetBusy(true, "Сохранение в AutoCAD…");
+                if (!CanEditContent(file.Status))
+                {
+                    MessageBox.Show(
+                        this,
+                        "Редактирование недоступно для статуса «" + (file.Status ?? "—")
+                        + "». Доступен только просмотр.",
+                        "Сохранение",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (hasDoc && AcadDocumentService.IsActiveDocumentReadOnly())
+                {
+                    MessageBox.Show(
+                        this,
+                        "Чертёж открыт в AutoCAD только для чтения.\n" +
+                        "Закройте его и откройте снова через каталог (статус draft/rejected).",
+                        "Сохранение",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                SetBusy(true, "Сохранение…");
                 _cts?.Cancel();
                 _cts = new CancellationTokenSource();
                 _progress.Value = 0;
 
                 try
                 {
-                    localPath = AcadDocumentService.SaveActiveDocument(file.LocalPath ?? localPath);
-                    file.LocalPath = localPath;
-                    OpenDrawingRegistry.Register(localPath, file);
+                    string? uploadPath = null;
+                    var oldId = file.Id;
+                    if (hasDoc)
+                    {
+                        SetStatus("Сохранение в AutoCAD…");
+                        var workPath = ResolveWritableWorkPath(file, localPath);
+                        uploadPath = AcadDocumentService.SaveActiveDocument(workPath);
+                        file.LocalPath = uploadPath;
+                        OpenDrawingRegistry.Register(uploadPath, file);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(file.LocalPath) && File.Exists(file.LocalPath))
+                    {
+                        uploadPath = file.LocalPath;
+                    }
+                    else if (_list.SelectedItems.Count > 0
+                             && _list.SelectedItems[0].Tag is DwgFileInfo selected
+                             && string.Equals(selected.Id, file.Id, StringComparison.OrdinalIgnoreCase)
+                             && !string.IsNullOrWhiteSpace(selected.LocalPath)
+                             && File.Exists(selected.LocalPath))
+                    {
+                        uploadPath = selected.LocalPath;
+                    }
 
-                    SetStatus("Отправка на сервер…");
+                    if (string.IsNullOrWhiteSpace(uploadPath) && !labels.HasAnyValue)
+                    {
+                        MessageBox.Show(
+                            this,
+                            "Нет локального DWG для отправки и не выбраны метки.\n" +
+                            "Откройте чертёж из каталога, измените и нажмите «Сохранить».",
+                            "Сохранение",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    SetStatus(string.IsNullOrWhiteSpace(uploadPath)
+                        ? "Сохранение меток…"
+                        : "Отправка на сервер…");
                     await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
                     var progress = new Progress<double>(p =>
                     {
@@ -998,20 +1137,52 @@ namespace AcadDwgBrowser.Plugin.Ui
                             _progress.Value = Math.Max(0, Math.Min(100, (int)(p * 100)));
                     });
 
+                    DwgFileInfo updated;
                     using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                     {
-                        await client.UpdateContentAsync(
-                                file.Id,
+                        updated = await client.UpdateContentAsync(
+                                oldId,
                                 newName: null,
-                                localDwgPath: localPath,
+                                localDwgPath: uploadPath,
                                 dwgFieldCode: file.DwgFieldCode,
+                                labels: labels.HasAnyValue ? labels : null,
                                 progress: progress,
                                 cancellationToken: _cts.Token)
                             .ConfigureAwait(true);
                     }
 
-                    AcadDocumentService.WriteMessage("Сохранено на сервер: " + file.Name);
-                    SetStatus("Сохранено: " + file.Name);
+                    if (!string.IsNullOrWhiteSpace(uploadPath))
+                        updated.LocalPath = uploadPath;
+                    else if (!string.IsNullOrWhiteSpace(file.LocalPath))
+                        updated.LocalPath = file.LocalPath;
+
+                    if (labels.HasAnyValue)
+                        updated.Labels = labels.Clone();
+                    else if (updated.Labels == null && file.Labels != null)
+                        updated.Labels = file.Labels.Clone();
+
+                    ApplyUpdatedCatalogItem(oldId, updated);
+                    // DWG replace creates a new content id — refresh catalog list.
+                    if (!string.Equals(oldId, updated.Id, StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(uploadPath))
+                    {
+                        await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
+                        var match = _allFiles.Find(f =>
+                            string.Equals(f.Id, updated.Id, StringComparison.OrdinalIgnoreCase));
+                        if (match != null)
+                        {
+                            match.LocalPath = updated.LocalPath;
+                            match.Labels = updated.Labels?.Clone();
+                            OpenDrawingRegistry.Register(updated.LocalPath ?? match.LocalPath!, match);
+                        }
+                        else if (!string.IsNullOrWhiteSpace(updated.Id))
+                        {
+                            ApplyUpdatedCatalogItem(oldId, updated);
+                        }
+                    }
+
+                    AcadDocumentService.WriteMessage("Сохранено на сервер: " + updated.Name);
+                    SetStatus("Сохранено: " + updated.Name);
                     UpdateActiveLabel();
                 }
                 catch (OperationCanceledException)
@@ -1032,8 +1203,131 @@ namespace AcadDwgBrowser.Plugin.Ui
                 return;
             }
 
+            // Selected catalog item (drawing closed) — save labels / local DWG if present.
+            if (!hasDoc
+                && _list.SelectedItems.Count > 0
+                && _list.SelectedItems[0].Tag is DwgFileInfo selectedFile
+                && !string.IsNullOrWhiteSpace(selectedFile.Id))
+            {
+                if (!CanEditContent(selectedFile.Status))
+                {
+                    MessageBox.Show(
+                        this,
+                        "Редактирование недоступно для статуса «" + (selectedFile.Status ?? "—") + "».",
+                        "Сохранение",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                await SaveCatalogItemAsync(selectedFile, labels).ConfigureAwait(true);
+                return;
+            }
+
+            if (!hasDoc)
+            {
+                MessageBox.Show(this, "Нет активного чертежа в AutoCAD.", "Сохранение",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             // Create new catalog item from the active AutoCAD drawing.
             await SaveNewDrawingAsync().ConfigureAwait(true);
+        }
+
+        private async Task SaveCatalogItemAsync(DwgFileInfo file, ProductionDrawingLabels labels)
+        {
+            var uploadPath = !string.IsNullOrWhiteSpace(file.LocalPath) && File.Exists(file.LocalPath)
+                ? file.LocalPath
+                : null;
+
+            if (string.IsNullOrWhiteSpace(uploadPath) && !labels.HasAnyValue)
+            {
+                MessageBox.Show(
+                    this,
+                    "Выберите метки или откройте чертёж, чтобы сохранить изменения.",
+                    "Сохранение",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            SetBusy(true, "Сохранение…");
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+            _progress.Value = 0;
+
+            try
+            {
+                await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
+                var progress = new Progress<double>(p =>
+                {
+                    if (IsHandleCreated && !IsDisposed)
+                        _progress.Value = Math.Max(0, Math.Min(100, (int)(p * 100)));
+                });
+
+                var oldId = file.Id;
+                DwgFileInfo updated;
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    updated = await client.UpdateContentAsync(
+                            oldId,
+                            newName: null,
+                            localDwgPath: uploadPath,
+                            dwgFieldCode: file.DwgFieldCode ?? "file_dwg",
+                            labels: labels.HasAnyValue ? labels : null,
+                            progress: progress,
+                            cancellationToken: _cts.Token)
+                        .ConfigureAwait(true);
+                }
+
+                if (!string.IsNullOrWhiteSpace(uploadPath))
+                    updated.LocalPath = uploadPath;
+                else if (!string.IsNullOrWhiteSpace(file.LocalPath))
+                    updated.LocalPath = file.LocalPath;
+
+                if (labels.HasAnyValue)
+                    updated.Labels = labels.Clone();
+                else if (updated.Labels == null && file.Labels != null)
+                    updated.Labels = file.Labels.Clone();
+
+                ApplyUpdatedCatalogItem(oldId, updated);
+                if (!string.Equals(oldId, updated.Id, StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(uploadPath))
+                {
+                    await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
+                    var match = _allFiles.Find(f =>
+                        string.Equals(f.Id, updated.Id, StringComparison.OrdinalIgnoreCase));
+                    if (match != null)
+                    {
+                        match.LocalPath = updated.LocalPath;
+                        match.Labels = updated.Labels?.Clone();
+                        if (!string.IsNullOrWhiteSpace(updated.LocalPath))
+                            OpenDrawingRegistry.Register(updated.LocalPath!, match);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(updated.Id))
+                    {
+                        ApplyUpdatedCatalogItem(oldId, updated);
+                    }
+                }
+
+                SetStatus("Сохранено: " + updated.Name);
+                UpdateActiveLabel();
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Отменено");
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Ошибка: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Сохранение", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+                _progress.Value = 0;
+            }
         }
 
         private async Task SaveNewDrawingAsync()
@@ -1080,11 +1374,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 var destDir = PluginApp.Settings.ResolveDownloadDirectory();
                 Directory.CreateDirectory(destDir);
-                var safeFile = MakeSafeFileName(suggested);
-                if (!safeFile.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
-                    safeFile += ".dwg";
-                var localPath = Path.Combine(destDir, safeFile);
-
+                // ASCII work copy — display name goes to API "code", not file name.
+                var localPath = Path.Combine(destDir, Guid.NewGuid().ToString("N") + ".dwg");
                 localPath = AcadDocumentService.SaveActiveDocumentAs(localPath);
 
                 SetStatus("Создание в каталоге…");
@@ -1118,21 +1409,49 @@ namespace AcadDwgBrowser.Plugin.Ui
                 }
 
                 created.LocalPath = localPath;
+                created.Status = "draft";
+                created.Name = suggested;
+                created.Labels = labels.Clone();
                 if (!string.IsNullOrWhiteSpace(created.Id))
                     OpenDrawingRegistry.Register(localPath, created);
-                OpenDrawingRegistry.PendingNewName = suggested;
-                AcadDocumentService.WriteMessage("Новый чертёж сохранён: " + suggested);
+                OpenDrawingRegistry.PendingNewName = null;
+                AcadDocumentService.WriteMessage("Новый чертёж сохранён как черновик: " + suggested);
 
-                await ReloadAsync().ConfigureAwait(true);
+                await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
 
-                var match = _allFiles.Find(f =>
+                var match = !string.IsNullOrWhiteSpace(created.Id)
+                    ? _allFiles.Find(f =>
+                        string.Equals(f.Id, created.Id, StringComparison.OrdinalIgnoreCase))
+                    : null;
+                match ??= _allFiles.Find(f =>
                     string.Equals(f.Name, suggested, StringComparison.OrdinalIgnoreCase));
                 if (match != null)
                 {
+                    match.Name = suggested;
                     match.LocalPath = localPath;
                     match.DwgFieldCode = created.DwgFieldCode;
+                    match.Status = string.IsNullOrWhiteSpace(match.Status) ? "draft" : match.Status;
+                    match.Labels = labels.Clone();
                     OpenDrawingRegistry.Register(localPath, match);
-                    SetStatus("Создано в каталоге: " + match.Name);
+                    // Also bind AutoCAD's current path after SaveAs.
+                    var activePath = AcadDocumentService.TryGetActiveDocumentPath();
+                    if (!string.IsNullOrWhiteSpace(activePath))
+                        OpenDrawingRegistry.Register(activePath!, match);
+                    SetStatus("Создано в каталоге (черновик): " + match.Name);
+                }
+                else if (!string.IsNullOrWhiteSpace(created.Id))
+                {
+                    _allFiles.Insert(0, created);
+                    ApplyFilter();
+                    OpenDrawingRegistry.Register(localPath, created);
+                    var activePath = AcadDocumentService.TryGetActiveDocumentPath();
+                    if (!string.IsNullOrWhiteSpace(activePath))
+                        OpenDrawingRegistry.Register(activePath!, created);
+                    SetStatus("Создано в каталоге (черновик): " + suggested);
+                }
+                else
+                {
+                    SetStatus("Создано в каталоге (черновик): " + suggested + " — обновите список");
                 }
 
                 UpdateActiveLabel();
@@ -1260,6 +1579,78 @@ namespace AcadDwgBrowser.Plugin.Ui
                 match.Name = file.Name;
         }
 
+        /// <summary>
+        /// Stable writable work copy under Downloads\{contentId}.dwg (ASCII-safe for AutoCAD).
+        /// </summary>
+        private string ResolveWritableWorkPath(DwgFileInfo file, string? fallbackPath)
+        {
+            if (!string.IsNullOrWhiteSpace(file.LocalPath)
+                && Path.IsPathRooted(file.LocalPath)
+                && string.Equals(Path.GetExtension(file.LocalPath), ".dwg", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetFullPath(file.LocalPath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(fallbackPath)
+                && Path.IsPathRooted(fallbackPath)
+                && string.Equals(Path.GetExtension(fallbackPath), ".dwg", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetFullPath(fallbackPath);
+            }
+
+            var idPart = !string.IsNullOrWhiteSpace(file.Id)
+                ? file.Id.Replace("-", string.Empty)
+                : Guid.NewGuid().ToString("N");
+            return Path.Combine(PluginApp.Settings.ResolveDownloadDirectory(), idPart + ".dwg");
+        }
+
+        private void ApplyUpdatedCatalogItem(string oldId, DwgFileInfo updated)
+        {
+            if (updated == null || string.IsNullOrWhiteSpace(updated.Id))
+                return;
+
+            if (!string.IsNullOrWhiteSpace(updated.LocalPath))
+                OpenDrawingRegistry.Register(updated.LocalPath!, updated);
+            else
+                OpenDrawingRegistry.Update(updated);
+
+            var activePath = AcadDocumentService.TryGetActiveDocumentPath();
+            if (!string.IsNullOrWhiteSpace(activePath))
+                OpenDrawingRegistry.Register(activePath!, updated);
+
+            var idx = _allFiles.FindIndex(f =>
+                string.Equals(f.Id, oldId, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0)
+            {
+                if (!string.Equals(oldId, updated.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    _allFiles.RemoveAt(idx);
+                    if (!_allFiles.Exists(f =>
+                            string.Equals(f.Id, updated.Id, StringComparison.OrdinalIgnoreCase)))
+                        _allFiles.Insert(Math.Min(idx, _allFiles.Count), updated);
+                }
+                else
+                {
+                    var existing = _allFiles[idx];
+                    existing.Name = updated.Name;
+                    existing.Status = updated.Status ?? existing.Status;
+                    existing.DwgFieldCode = updated.DwgFieldCode ?? existing.DwgFieldCode;
+                    existing.LocalPath = updated.LocalPath ?? existing.LocalPath;
+                    if (updated.Labels != null)
+                        existing.Labels = updated.Labels.Clone();
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(updated.Id)
+                     && !_allFiles.Exists(f =>
+                         string.Equals(f.Id, updated.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                _allFiles.Insert(0, updated);
+            }
+
+            ApplyFilter();
+            UpdateCatalogActionButtons();
+        }
+
         private void UpdateActiveLabel()
         {
             if (_activeLabel == null || _activeLabel.IsDisposed)
@@ -1273,9 +1664,13 @@ namespace AcadDwgBrowser.Plugin.Ui
             if (OpenDrawingRegistry.TryGetCurrent(out var file, out _)
                 && !string.IsNullOrWhiteSpace(file.Id))
             {
-                _activeLabel.Text = "Активный чертёж: " + file.Name;
-                _renameButton.Enabled = loggedIn;
-                _saveButton.Enabled = loggedIn;
+                var editable = CanEditContent(file.Status);
+                _activeLabel.Text = editable
+                    ? "Активный чертёж: " + file.Name + " [" + (file.Status ?? "—") + "]"
+                    : "Просмотр: " + file.Name + " [" + (file.Status ?? "—") + "]";
+                _renameButton.Enabled = loggedIn && editable;
+                _saveButton.Enabled = loggedIn && editable;
+                SetLabelCombosEnabled(!_busy && editable);
                 if (file.Labels != null && file.Labels.HasAnyValue)
                     ApplyLabelsToUi(file.Labels);
                 else if (file.Labels == null)
@@ -1286,16 +1681,31 @@ namespace AcadDwgBrowser.Plugin.Ui
                 var title = OpenDrawingRegistry.PendingNewName
                             ?? AcadDocumentService.TryGetActiveDocumentTitle()
                             ?? "новый";
-                _activeLabel.Text = "Новый чертёж: " + title + " (сохранить в каталог)";
+                _activeLabel.Text = "Новый чертёж: " + title + " → сохранить как черновик";
                 _renameButton.Enabled = loggedIn;
                 _saveButton.Enabled = loggedIn;
+                SetLabelCombosEnabled(!_busy);
             }
             else
             {
                 _activeLabel.Text = "Активный чертёж: —";
                 _renameButton.Enabled = false;
                 _saveButton.Enabled = false;
+                SetLabelCombosEnabled(!_busy);
             }
+        }
+
+        private void SetLabelCombosEnabled(bool enabled)
+        {
+            if (_userCombo == null || _userCombo.IsDisposed)
+                return;
+            _userCombo.Enabled = enabled;
+            _categoryCombo.Enabled = enabled;
+            _brandCombo.Enabled = enabled;
+            _modelCombo.Enabled = enabled;
+            _perforationCombo.Enabled = enabled;
+            _edgeCombo.Enabled = enabled;
+            _sizeCombo.Enabled = enabled;
         }
 
         private void BeginInvokeSafe(Action action)
@@ -1601,13 +2011,6 @@ namespace AcadDwgBrowser.Plugin.Ui
             _logoutButton.Enabled = !busy;
             _filterBox.Enabled = !busy;
             UpdateCatalogActionButtons();
-            _userCombo.Enabled = !busy;
-            _categoryCombo.Enabled = !busy;
-            _brandCombo.Enabled = !busy;
-            _modelCombo.Enabled = !busy;
-            _perforationCombo.Enabled = !busy;
-            _edgeCombo.Enabled = !busy;
-            _sizeCombo.Enabled = !busy;
             if (status != null)
                 SetStatus(status);
             UpdateActiveLabel();
