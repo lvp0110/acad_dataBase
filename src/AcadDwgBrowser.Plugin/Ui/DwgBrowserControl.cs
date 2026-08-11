@@ -30,8 +30,16 @@ namespace AcadDwgBrowser.Plugin.Ui
         private TextBox _filterBox = null!;
         private Label _statusLabel = null!;
         private Label _activeLabel = null!;
+        private ComboBox _userCombo = null!;
+        private ComboBox _categoryCombo = null!;
+        private ComboBox _brandCombo = null!;
+        private ComboBox _modelCombo = null!;
+        private ComboBox _perforationCombo = null!;
+        private ComboBox _edgeCombo = null!;
+        private ComboBox _sizeCombo = null!;
         private ProgressBar _progress = null!;
         private List<DwgFileInfo> _allFiles = new List<DwgFileInfo>();
+        private List<FilterEntity> _filters = new List<FilterEntity>();
         private CancellationTokenSource? _cts;
         private bool _busy;
         private bool _sessionChecked;
@@ -193,7 +201,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 118));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 292));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             panel.Controls.Add(root);
 
@@ -315,7 +323,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             // —— Section 2: rename / save active AutoCAD drawing ——
             var editorGroup = new GroupBox
             {
-                Text = "Активный чертёж AutoCAD — переименовать / сохранить",
+                Text = "Активный чертёж AutoCAD — метки, переименовать / сохранить",
                 Dock = DockStyle.Fill,
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold),
                 Padding = new Padding(8, 6, 8, 8),
@@ -327,9 +335,10 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 3,
                 Padding = new Padding(0, 4, 0, 0)
             };
+            editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             editorLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             editorGroup.Controls.Add(editorLayout);
@@ -344,6 +353,27 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             editorLayout.Controls.Add(_activeLabel, 0, 0);
 
+            var labelsPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 7,
+                Padding = new Padding(0)
+            };
+            labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            for (var i = 0; i < 7; i++)
+                labelsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            editorLayout.Controls.Add(labelsPanel, 0, 1);
+
+            _userCombo = AddLabelCombo(labelsPanel, 0, "Заказчик *");
+            _categoryCombo = AddLabelCombo(labelsPanel, 1, "Категория *");
+            _brandCombo = AddLabelCombo(labelsPanel, 2, "Бренд *");
+            _modelCombo = AddLabelCombo(labelsPanel, 3, "Модель *");
+            _perforationCombo = AddLabelCombo(labelsPanel, 4, "Перфорация *");
+            _edgeCombo = AddLabelCombo(labelsPanel, 5, "Кромка *");
+            _sizeCombo = AddLabelCombo(labelsPanel, 6, "Размер панели *");
+
             var actions = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -352,7 +382,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            editorLayout.Controls.Add(actions, 0, 1);
+            editorLayout.Controls.Add(actions, 0, 2);
 
             _renameButton = new Button
             {
@@ -386,6 +416,27 @@ namespace AcadDwgBrowser.Plugin.Ui
             root.Controls.Add(_statusLabel, 0, 3);
 
             return panel;
+        }
+
+        private static ComboBox AddLabelCombo(TableLayoutPanel host, int row, string caption)
+        {
+            host.Controls.Add(new Label
+            {
+                Text = caption,
+                Dock = DockStyle.Fill,
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, row);
+
+            var combo = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Font = new Font("Segoe UI", 8.5f),
+                Margin = new Padding(0, 2, 0, 2)
+            };
+            host.Controls.Add(combo, 1, row);
+            return combo;
         }
 
         public void RefreshOnShow()
@@ -598,8 +649,12 @@ namespace AcadDwgBrowser.Plugin.Ui
                 PluginApp.Settings.ContentType = "production_drawings";
                 using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                 {
-                    var files = await client.ListFilesAsync(_cts.Token).ConfigureAwait(true);
-                    _allFiles = new List<DwgFileInfo>(files);
+                    var filtersTask = client.GetFiltersAsync(_cts.Token);
+                    var filesTask = client.ListFilesAsync(_cts.Token);
+                    await Task.WhenAll(filtersTask, filesTask).ConfigureAwait(true);
+
+                    BindFilters(filtersTask.Result);
+                    _allFiles = new List<DwgFileInfo>(filesTask.Result);
                     ApplyFilter();
                     SetStatus($"Производственные чертежи: {_allFiles.Count}");
                 }
@@ -873,6 +928,18 @@ namespace AcadDwgBrowser.Plugin.Ui
 
         private async Task SaveNewDrawingAsync()
         {
+            if (!TryGetSelectedLabels(out var labels, out var missingLabel))
+            {
+                MessageBox.Show(
+                    this,
+                    "Перед сохранением заполните все обязательные метки в разделе «Активный чертёж».\n\nНе заполнено: "
+                    + missingLabel,
+                    "Метки чертежа",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
             var suggested = OpenDrawingRegistry.PendingNewName
                             ?? AcadDocumentService.TryGetActiveDocumentTitle()
                             ?? "Новый чертёж";
@@ -924,6 +991,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     created = await client.CreateContentAsync(
                             suggested,
                             localPath,
+                            labels,
                             dwgFieldCode: null,
                             progress: progress,
                             cancellationToken: _cts.Token)
@@ -1160,6 +1228,128 @@ namespace AcadDwgBrowser.Plugin.Ui
             _openButton.Enabled = !_busy && _list.SelectedItems.Count > 0;
         }
 
+        private void BindFilters(IReadOnlyList<FilterEntity> filters)
+        {
+            _filters = filters != null
+                ? new List<FilterEntity>(filters)
+                : new List<FilterEntity>();
+
+            BindCombo(_userCombo, FindFilter("user_uuid", "user", "customer"), "Заказчик");
+            BindCombo(_categoryCombo, FindFilter("global_cat_code", "global_category_code", "global_category", "category"), "Категория");
+            BindCombo(_brandCombo, FindFilter("brand_code", "brand"), "Бренд");
+            BindCombo(_modelCombo, FindFilter("model_code", "model"), "Модель");
+            BindCombo(_perforationCombo, FindFilter(
+                "prod_drawing_perforation_code",
+                "prod_drawing_panel_perforation",
+                "prod_drawing_perforation",
+                "perforation"), "Перфорация");
+            BindCombo(_edgeCombo, FindFilter(
+                "prod_drawing_edge_code",
+                "prod_drawing_edge",
+                "edge"), "Кромка");
+            BindCombo(_sizeCombo, FindFilter(
+                "prod_drawing_panel_size_code",
+                "prod_drawing_panel_size",
+                "panel_size"), "Размер панели");
+        }
+
+        private FilterEntity? FindFilter(params string[] codes)
+        {
+            foreach (var code in codes)
+            {
+                var byCode = _filters.Find(f =>
+                    string.Equals(f.Code, code, StringComparison.OrdinalIgnoreCase));
+                if (byCode != null)
+                    return byCode;
+            }
+
+            // Fallback by Russian/English display name fragments.
+            foreach (var code in codes)
+            {
+                var needle = code.Replace("_", " ");
+                var byName = _filters.Find(f =>
+                    (f.Name ?? string.Empty).IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
+                    || (f.Name ?? string.Empty).IndexOf(MapFilterHint(code), StringComparison.OrdinalIgnoreCase) >= 0);
+                if (byName != null)
+                    return byName;
+            }
+
+            return null;
+        }
+
+        private static string MapFilterHint(string code)
+        {
+            if (code.IndexOf("user", StringComparison.OrdinalIgnoreCase) >= 0) return "заказчик";
+            if (code.IndexOf("global_cat", StringComparison.OrdinalIgnoreCase) >= 0
+                || code.IndexOf("category", StringComparison.OrdinalIgnoreCase) >= 0) return "категор";
+            if (code.IndexOf("brand", StringComparison.OrdinalIgnoreCase) >= 0) return "бренд";
+            if (code.IndexOf("model", StringComparison.OrdinalIgnoreCase) >= 0) return "модель";
+            if (code.IndexOf("perfor", StringComparison.OrdinalIgnoreCase) >= 0) return "перфор";
+            if (code.IndexOf("edge", StringComparison.OrdinalIgnoreCase) >= 0) return "кромк";
+            if (code.IndexOf("size", StringComparison.OrdinalIgnoreCase) >= 0
+                || code.IndexOf("panel", StringComparison.OrdinalIgnoreCase) >= 0) return "размер";
+            return code;
+        }
+
+        private static void BindCombo(ComboBox combo, FilterEntity? entity, string placeholder)
+        {
+            var previous = (combo.SelectedItem as FilterOption)?.Code;
+            combo.BeginUpdate();
+            combo.Items.Clear();
+            combo.Items.Add(new FilterOption { Code = string.Empty, Name = "— " + placeholder + " —" });
+
+            if (entity?.Options != null)
+            {
+                foreach (var opt in entity.Options)
+                {
+                    if (opt == null || string.IsNullOrWhiteSpace(opt.Code))
+                        continue;
+                    combo.Items.Add(opt);
+                }
+            }
+
+            var selectedIndex = 0;
+            if (!string.IsNullOrWhiteSpace(previous))
+            {
+                for (var i = 0; i < combo.Items.Count; i++)
+                {
+                    if (combo.Items[i] is FilterOption fo
+                        && string.Equals(fo.Code, previous, StringComparison.OrdinalIgnoreCase))
+                    {
+                        selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            combo.SelectedIndex = combo.Items.Count > 0 ? selectedIndex : -1;
+            combo.EndUpdate();
+        }
+
+        private static string? GetSelectedCode(ComboBox combo)
+        {
+            if (combo.SelectedItem is FilterOption opt && !string.IsNullOrWhiteSpace(opt.Code))
+                return opt.Code.Trim();
+            return null;
+        }
+
+        private bool TryGetSelectedLabels(out ProductionDrawingLabels labels, out string missing)
+        {
+            labels = new ProductionDrawingLabels
+            {
+                UserUuid = GetSelectedCode(_userCombo) ?? string.Empty,
+                GlobalCategoryCode = GetSelectedCode(_categoryCombo) ?? string.Empty,
+                BrandCode = GetSelectedCode(_brandCombo) ?? string.Empty,
+                ModelCode = GetSelectedCode(_modelCombo) ?? string.Empty,
+                PerforationCode = GetSelectedCode(_perforationCombo) ?? string.Empty,
+                EdgeCode = GetSelectedCode(_edgeCombo) ?? string.Empty,
+                PanelSizeCode = GetSelectedCode(_sizeCombo) ?? string.Empty
+            };
+
+            missing = labels.MissingFieldName() ?? string.Empty;
+            return labels.IsComplete;
+        }
+
         private void SetBusy(bool busy, string? status = null)
         {
             _busy = busy;
@@ -1171,6 +1361,13 @@ namespace AcadDwgBrowser.Plugin.Ui
             _logoutButton.Enabled = !busy;
             _openButton.Enabled = !busy && _list.SelectedItems.Count > 0;
             _filterBox.Enabled = !busy;
+            _userCombo.Enabled = !busy;
+            _categoryCombo.Enabled = !busy;
+            _brandCombo.Enabled = !busy;
+            _modelCombo.Enabled = !busy;
+            _perforationCombo.Enabled = !busy;
+            _edgeCombo.Enabled = !busy;
+            _sizeCombo.Enabled = !busy;
             if (status != null)
                 SetStatus(status);
             UpdateActiveLabel();

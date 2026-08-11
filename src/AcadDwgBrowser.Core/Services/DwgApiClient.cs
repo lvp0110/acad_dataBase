@@ -253,9 +253,26 @@ namespace AcadDwgBrowser.Core.Services
             progress?.Report(1.0);
         }
 
+        public async Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(
+            CancellationToken cancellationToken = default)
+        {
+            var endpoint = _settings.BuildContentFiltersUrl();
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+            {
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var payload = JsonSerializer.Deserialize<FiltersResponse>(json, JsonOptions)
+                              ?? new FiltersResponse();
+                if (payload.Code >= 400)
+                    throw new InvalidOperationException(payload.Error ?? "Ошибка фильтров/меток.");
+                return payload.Data ?? new List<FilterEntity>();
+            }
+        }
+
         public async Task<DwgFileInfo> CreateContentAsync(
             string name,
             string localDwgPath,
+            ProductionDrawingLabels labels,
             string? dwgFieldCode = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default)
@@ -264,13 +281,11 @@ namespace AcadDwgBrowser.Core.Services
                 throw new ArgumentException("Имя чертежа пусто.", nameof(name));
             if (string.IsNullOrWhiteSpace(localDwgPath) || !File.Exists(localDwgPath))
                 throw new FileNotFoundException("Локальный DWG не найден.", localDwgPath);
+            if (labels == null || !labels.IsComplete)
+                throw new InvalidOperationException(
+                    "Заполните все обязательные метки: " + (labels?.MissingFieldName() ?? "метки"));
 
             name = name.Trim();
-            var userUuid = _session?.User?.UserId;
-            if (string.IsNullOrWhiteSpace(userUuid))
-                throw new InvalidOperationException(
-                    "В сессии нет user_id. Выйдите и войдите снова.");
-
             var fieldCode = string.IsNullOrWhiteSpace(dwgFieldCode) ? "file_dwg" : dwgFieldCode!.Trim();
             try
             {
@@ -295,8 +310,6 @@ namespace AcadDwgBrowser.Core.Services
             var bytes = await ReadFileSharedAsync(localDwgPath, cancellationToken).ConfigureAwait(false);
             progress?.Report(0.35);
 
-            // Live API expects flat multipart fields (not only nested payload JSON).
-            // Required for production_drawings: code, user_uuid, brand/model/category/edge/size/perf + file_dwg.
             string body;
             using (var form = new MultipartFormDataContent())
             {
@@ -304,13 +317,13 @@ namespace AcadDwgBrowser.Core.Services
                     form.Add(new StringContent(value ?? string.Empty, Encoding.UTF8), key);
 
                 AddField("code", name);
-                AddField("user_uuid", userUuid!);
-                AddField("brand_code", _settings.DefaultBrandCode);
-                AddField("model_code", _settings.DefaultModelCode);
-                AddField("global_category_code", _settings.DefaultGlobalCategoryCode);
-                AddField("prod_drawing_edge_code", _settings.DefaultProdDrawingEdgeCode);
-                AddField("prod_drawing_panel_size_code", _settings.DefaultProdDrawingPanelSizeCode);
-                AddField("prod_drawing_perforation_code", _settings.DefaultProdDrawingPerforationCode);
+                AddField("user_uuid", labels.UserUuid);
+                AddField("brand_code", labels.BrandCode);
+                AddField("model_code", labels.ModelCode);
+                AddField("global_category_code", labels.GlobalCategoryCode);
+                AddField("prod_drawing_edge_code", labels.EdgeCode);
+                AddField("prod_drawing_panel_size_code", labels.PanelSizeCode);
+                AddField("prod_drawing_perforation_code", labels.PerforationCode);
 
                 var fileContent = new ByteArrayContent(bytes);
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");

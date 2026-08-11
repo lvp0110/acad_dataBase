@@ -106,6 +106,14 @@ namespace AcadDwgBrowser.Core.Configuration
                 .Replace("{fileID}", Uri.EscapeDataString(fileId ?? string.Empty))
                 .TrimStart('/');
 
+        /// <summary>GET — swagger /content/filters/{code}</summary>
+        public string ContentFiltersPath { get; set; } = "/content/filters/{code}";
+
+        public string BuildContentFiltersUrl(string? code = null) =>
+            (ContentFiltersPath ?? "/content/filters/{code}")
+                .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))
+                .TrimStart('/');
+
         public string BuildContentCreateUrl(string? code = null) =>
             (ContentCreatePath ?? "/content/{code}")
                 .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))

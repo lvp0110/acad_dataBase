@@ -10,6 +10,8 @@ namespace AcadDwgBrowser.Core.Services
     {
         Task<IReadOnlyList<DwgFileInfo>> ListFilesAsync(CancellationToken cancellationToken = default);
 
+        Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(CancellationToken cancellationToken = default);
+
         Task<string> DownloadFileAsync(
             DwgFileInfo file,
             string destinationDirectory,
@@ -29,12 +31,12 @@ namespace AcadDwgBrowser.Core.Services
             CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Creates new content via POST /content/{code} with DWG file.
-        /// Returns created content id when the API provides it.
+        /// Creates new content via POST /content/{code} with DWG file and required labels.
         /// </summary>
         Task<DwgFileInfo> CreateContentAsync(
             string name,
             string localDwgPath,
+            ProductionDrawingLabels labels,
             string? dwgFieldCode = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default);
