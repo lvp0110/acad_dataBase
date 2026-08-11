@@ -12,6 +12,11 @@ namespace AcadDwgBrowser.Core.Services
 
         Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(CancellationToken cancellationToken = default);
 
+        /// <summary>Reads label field codes from GET /content/{id} payload.</summary>
+        Task<ProductionDrawingLabels?> GetContentLabelsAsync(
+            string contentId,
+            CancellationToken cancellationToken = default);
+
         Task<string> DownloadFileAsync(
             DwgFileInfo file,
             string destinationDirectory,
@@ -40,5 +45,10 @@ namespace AcadDwgBrowser.Core.Services
             string? dwgFieldCode = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Deletes content via DELETE /content/{id}. API allows draft/rejected only.
+        /// </summary>
+        Task DeleteContentAsync(string contentId, CancellationToken cancellationToken = default);
     }
 }

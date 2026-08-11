@@ -25,6 +25,7 @@ namespace AcadDwgBrowser.Plugin.Ui
         private ListView _list = null!;
         private Button _refreshButton = null!;
         private Button _openButton = null!;
+        private Button _deleteButton = null!;
         private Button _renameButton = null!;
         private Button _saveButton = null!;
         private TextBox _filterBox = null!;
@@ -41,6 +42,8 @@ namespace AcadDwgBrowser.Plugin.Ui
         private List<DwgFileInfo> _allFiles = new List<DwgFileInfo>();
         private List<FilterEntity> _filters = new List<FilterEntity>();
         private CancellationTokenSource? _cts;
+        private CancellationTokenSource? _labelsCts;
+        private string? _labelsRequestId;
         private bool _busy;
         private bool _sessionChecked;
         private readonly Autodesk.AutoCAD.ApplicationServices.DocumentCollectionEventHandler _onDocActivated;
@@ -201,7 +204,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 292));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 310));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             panel.Controls.Add(root);
 
@@ -260,12 +263,13 @@ namespace AcadDwgBrowser.Plugin.Ui
             var toolbar = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 3,
+                ColumnCount = 4,
                 RowCount = 1
             };
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             catalogLayout.Controls.Add(toolbar, 0, 0);
 
             _filterBox = new TextBox { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9f) };
@@ -293,6 +297,17 @@ namespace AcadDwgBrowser.Plugin.Ui
             _openButton.Click += async (_, __) => await OpenSelectedAsync();
             toolbar.Controls.Add(_openButton, 2, 0);
 
+            _deleteButton = new Button
+            {
+                Text = "Удалить",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(6, 0, 0, 0),
+                Font = new Font("Segoe UI", 9f),
+                Enabled = false
+            };
+            _deleteButton.Click += async (_, __) => await DeleteSelectedAsync();
+            toolbar.Controls.Add(_deleteButton, 3, 0);
+
             _list = new ListView
             {
                 Dock = DockStyle.Fill,
@@ -306,8 +321,11 @@ namespace AcadDwgBrowser.Plugin.Ui
             _list.Columns.Add("Статус", 100);
             _list.Columns.Add("Метки", 120);
             _list.Columns.Add("Обновлён", 120);
-            _list.SelectedIndexChanged += (_, __) =>
-                _openButton.Enabled = !_busy && _list.SelectedItems.Count > 0;
+            _list.SelectedIndexChanged += async (_, __) =>
+            {
+                UpdateCatalogActionButtons();
+                await OnCatalogSelectionChangedAsync().ConfigureAwait(true);
+            };
             _list.DoubleClick += async (_, __) => await OpenSelectedAsync();
             catalogLayout.Controls.Add(_list, 0, 1);
 
@@ -364,7 +382,17 @@ namespace AcadDwgBrowser.Plugin.Ui
             labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             for (var i = 0; i < 7; i++)
                 labelsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            editorLayout.Controls.Add(labelsPanel, 0, 1);
+
+            var labelsScroll = new Panel
+            {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                Padding = new Padding(0)
+            };
+            labelsPanel.Dock = DockStyle.Top;
+            labelsPanel.Height = 7 * 28 + 4;
+            labelsScroll.Controls.Add(labelsPanel);
+            editorLayout.Controls.Add(labelsScroll, 0, 1);
 
             _userCombo = AddLabelCombo(labelsPanel, 0, "Заказчик *");
             _categoryCombo = AddLabelCombo(labelsPanel, 1, "Категория *");
@@ -722,6 +750,7 @@ namespace AcadDwgBrowser.Plugin.Ui
 
                 AcadDocumentService.WriteMessage("Открыт файл: " + localPath);
                 SetStatus("Открыто: " + file.Name);
+                ApplyLabelsToUi(file.Labels);
                 UpdateActiveLabel();
 
                 // Open may finish slightly later when queued to the application thread.
@@ -762,6 +791,87 @@ namespace AcadDwgBrowser.Plugin.Ui
                 SetBusy(false);
                 _progress.Value = 0;
             }
+        }
+
+        private async Task DeleteSelectedAsync()
+        {
+            if (_busy || _list.SelectedItems.Count == 0)
+                return;
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+            {
+                ShowLogin(true);
+                return;
+            }
+
+            var file = _list.SelectedItems[0].Tag as DwgFileInfo;
+            if (file == null || string.IsNullOrWhiteSpace(file.Id))
+                return;
+
+            if (!IsDraftStatus(file.Status))
+            {
+                MessageBox.Show(
+                    this,
+                    "Удалять можно только конструкции в статусе draft.\nТекущий статус: "
+                    + (file.Status ?? "—"),
+                    "Удаление",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                this,
+                "Удалить конструкцию «" + file.Name + "»?\nЭто действие нельзя отменить.",
+                "Удаление",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (confirm != DialogResult.Yes)
+                return;
+
+            SetBusy(true, "Удаление " + file.Name + "…");
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+
+            try
+            {
+                await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    await client.DeleteContentAsync(file.Id, _cts.Token).ConfigureAwait(true);
+                }
+
+                AcadDocumentService.WriteMessage("Удалено: " + file.Name);
+                SetStatus("Удалено: " + file.Name);
+                await ReloadAsync().ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Отменено");
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Ошибка: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Удаление", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
+        private static bool IsDraftStatus(string? status) =>
+            string.Equals(status?.Trim(), "draft", StringComparison.OrdinalIgnoreCase);
+
+        private void UpdateCatalogActionButtons()
+        {
+            var hasSelection = !_busy && _list.SelectedItems.Count > 0;
+            _openButton.Enabled = hasSelection;
+
+            var canDelete = false;
+            if (hasSelection && _list.SelectedItems[0].Tag is DwgFileInfo file)
+                canDelete = IsDraftStatus(file.Status);
+            _deleteButton.Enabled = canDelete;
         }
 
         private async Task RenameActiveAsync()
@@ -1166,6 +1276,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _activeLabel.Text = "Активный чертёж: " + file.Name;
                 _renameButton.Enabled = loggedIn;
                 _saveButton.Enabled = loggedIn;
+                if (file.Labels != null && file.Labels.HasAnyValue)
+                    ApplyLabelsToUi(file.Labels);
+                else if (file.Labels == null)
+                    _ = EnsureLabelsLoadedAsync(file);
             }
             else if (hasDoc)
             {
@@ -1225,7 +1339,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             }
 
             _list.EndUpdate();
-            _openButton.Enabled = !_busy && _list.SelectedItems.Count > 0;
+            UpdateCatalogActionButtons();
         }
 
         private void BindFilters(IReadOnlyList<FilterEntity> filters)
@@ -1251,6 +1365,132 @@ namespace AcadDwgBrowser.Plugin.Ui
                 "prod_drawing_panel_size_code",
                 "prod_drawing_panel_size",
                 "panel_size"), "Размер панели");
+
+            // Keep current construction labels selected after options reload.
+            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _)
+                && current.Labels != null
+                && current.Labels.HasAnyValue)
+            {
+                ApplyLabelsToUi(current.Labels);
+            }
+            else if (_list.SelectedItems.Count > 0
+                     && _list.SelectedItems[0].Tag is DwgFileInfo selected
+                     && selected.Labels != null
+                     && selected.Labels.HasAnyValue)
+            {
+                ApplyLabelsToUi(selected.Labels);
+            }
+        }
+
+        private async Task OnCatalogSelectionChangedAsync()
+        {
+            if (_list.SelectedItems.Count == 0)
+                return;
+
+            var file = _list.SelectedItems[0].Tag as DwgFileInfo;
+            if (file == null || string.IsNullOrWhiteSpace(file.Id))
+                return;
+
+            // Prefer already loaded labels; otherwise fetch payload codes.
+            if (file.Labels != null && file.Labels.HasAnyValue)
+            {
+                ApplyLabelsToUi(file.Labels);
+                return;
+            }
+
+            await EnsureLabelsLoadedAsync(file).ConfigureAwait(true);
+        }
+
+        private async Task EnsureLabelsLoadedAsync(DwgFileInfo file)
+        {
+            if (file == null || string.IsNullOrWhiteSpace(file.Id))
+                return;
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+                return;
+            if (file.Labels != null && file.Labels.HasAnyValue)
+            {
+                ApplyLabelsToUi(file.Labels);
+                return;
+            }
+
+            var requestId = file.Id;
+            _labelsRequestId = requestId;
+            _labelsCts?.Cancel();
+            _labelsCts = new CancellationTokenSource();
+            var token = _labelsCts.Token;
+
+            try
+            {
+                ProductionDrawingLabels? labels;
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    labels = await client.GetContentLabelsAsync(file.Id, token).ConfigureAwait(true);
+                }
+
+                if (token.IsCancellationRequested || _labelsRequestId != requestId)
+                    return;
+
+                file.Labels = labels ?? new ProductionDrawingLabels();
+                var match = _allFiles.Find(f =>
+                    string.Equals(f.Id, file.Id, StringComparison.OrdinalIgnoreCase));
+                if (match != null)
+                    match.Labels = file.Labels.Clone();
+                if (!string.IsNullOrWhiteSpace(file.LocalPath))
+                    OpenDrawingRegistry.Register(file.LocalPath!, file);
+
+                if (file.Labels.HasAnyValue)
+                    ApplyLabelsToUi(file.Labels);
+            }
+            catch (OperationCanceledException)
+            {
+                // selection changed
+            }
+            catch
+            {
+                // keep UI usable if labels fail to load
+            }
+        }
+
+        private void ApplyLabelsToUi(ProductionDrawingLabels? labels)
+        {
+            if (_userCombo == null || _userCombo.IsDisposed)
+                return;
+
+            SelectComboCode(_userCombo, labels?.UserUuid);
+            SelectComboCode(_categoryCombo, labels?.GlobalCategoryCode);
+            SelectComboCode(_brandCombo, labels?.BrandCode);
+            SelectComboCode(_modelCombo, labels?.ModelCode);
+            SelectComboCode(_perforationCombo, labels?.PerforationCode);
+            SelectComboCode(_edgeCombo, labels?.EdgeCode);
+            SelectComboCode(_sizeCombo, labels?.PanelSizeCode);
+        }
+
+        private static void SelectComboCode(ComboBox combo, string? code)
+        {
+            if (combo == null || combo.IsDisposed)
+                return;
+
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                if (combo.Items.Count > 0)
+                    combo.SelectedIndex = 0;
+                return;
+            }
+
+            for (var i = 0; i < combo.Items.Count; i++)
+            {
+                if (combo.Items[i] is FilterOption fo
+                    && string.Equals(fo.Code, code, StringComparison.OrdinalIgnoreCase))
+                {
+                    combo.SelectedIndex = i;
+                    return;
+                }
+            }
+
+            // Keep unknown code visible even if it is missing from the dictionary.
+            var orphan = new FilterOption { Code = code.Trim(), Name = code.Trim() };
+            combo.Items.Add(orphan);
+            combo.SelectedItem = orphan;
         }
 
         private FilterEntity? FindFilter(params string[] codes)
@@ -1359,8 +1599,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             _passwordBox.Enabled = !busy;
             _refreshButton.Enabled = !busy;
             _logoutButton.Enabled = !busy;
-            _openButton.Enabled = !busy && _list.SelectedItems.Count > 0;
             _filterBox.Enabled = !busy;
+            UpdateCatalogActionButtons();
             _userCombo.Enabled = !busy;
             _categoryCombo.Enabled = !busy;
             _brandCombo.Enabled = !busy;
@@ -1406,6 +1646,8 @@ namespace AcadDwgBrowser.Plugin.Ui
 
                 _cts?.Cancel();
                 _cts?.Dispose();
+                _labelsCts?.Cancel();
+                _labelsCts?.Dispose();
             }
 
             base.Dispose(disposing);

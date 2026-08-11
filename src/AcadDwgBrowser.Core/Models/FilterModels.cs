@@ -42,6 +42,54 @@ namespace AcadDwgBrowser.Core.Models
             string.IsNullOrWhiteSpace(Name) ? Code : Name;
     }
 
+    /// <summary>swagger.EntitiesListResponse</summary>
+    public sealed class EntitiesListResponse
+    {
+        [JsonPropertyName("code")]
+        public int Code { get; set; }
+
+        [JsonPropertyName("data")]
+        public List<EntityItem> Data { get; set; } = new List<EntityItem>();
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
+    }
+
+    /// <summary>models.Entity</summary>
+    public sealed class EntityItem
+    {
+        [JsonPropertyName("Code")]
+        public string Code { get; set; } = string.Empty;
+
+        [JsonPropertyName("Name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("Type")]
+        public string? Type { get; set; }
+    }
+
+    /// <summary>swagger response for /api/v2/globalMenuCategories</summary>
+    public sealed class GlobalMenuCategoriesResponse
+    {
+        [JsonPropertyName("code")]
+        public int Code { get; set; }
+
+        [JsonPropertyName("data")]
+        public List<GlobalMenuCategory> Data { get; set; } = new List<GlobalMenuCategory>();
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
+    }
+
+    public sealed class GlobalMenuCategory
+    {
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = string.Empty;
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+    }
+
     /// <summary>Selected production-drawing form labels for create/update.</summary>
     public sealed class ProductionDrawingLabels
     {
@@ -62,6 +110,15 @@ namespace AcadDwgBrowser.Core.Models
             && !string.IsNullOrWhiteSpace(PanelSizeCode)
             && !string.IsNullOrWhiteSpace(PerforationCode);
 
+        public bool HasAnyValue =>
+            !string.IsNullOrWhiteSpace(UserUuid)
+            || !string.IsNullOrWhiteSpace(BrandCode)
+            || !string.IsNullOrWhiteSpace(ModelCode)
+            || !string.IsNullOrWhiteSpace(GlobalCategoryCode)
+            || !string.IsNullOrWhiteSpace(EdgeCode)
+            || !string.IsNullOrWhiteSpace(PanelSizeCode)
+            || !string.IsNullOrWhiteSpace(PerforationCode);
+
         public string? MissingFieldName()
         {
             if (string.IsNullOrWhiteSpace(UserUuid)) return "Заказчик";
@@ -72,6 +129,62 @@ namespace AcadDwgBrowser.Core.Models
             if (string.IsNullOrWhiteSpace(EdgeCode)) return "Кромка";
             if (string.IsNullOrWhiteSpace(PanelSizeCode)) return "Размер панели";
             return null;
+        }
+
+        public ProductionDrawingLabels Clone() =>
+            new ProductionDrawingLabels
+            {
+                UserUuid = UserUuid,
+                BrandCode = BrandCode,
+                ModelCode = ModelCode,
+                GlobalCategoryCode = GlobalCategoryCode,
+                EdgeCode = EdgeCode,
+                PanelSizeCode = PanelSizeCode,
+                PerforationCode = PerforationCode
+            };
+
+        public static ProductionDrawingLabels? TryFromPayload(System.Text.Json.JsonElement payload)
+        {
+            if (payload.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return null;
+
+            string Get(params string[] keys)
+            {
+                foreach (var key in keys)
+                {
+                    if (!payload.TryGetProperty(key, out var prop))
+                        continue;
+                    if (prop.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var s = prop.GetString();
+                        if (!string.IsNullOrWhiteSpace(s))
+                            return s.Trim();
+                    }
+                    else if (prop.ValueKind == System.Text.Json.JsonValueKind.Object
+                             && prop.TryGetProperty("code", out var nested)
+                             && nested.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var s = nested.GetString();
+                        if (!string.IsNullOrWhiteSpace(s))
+                            return s.Trim();
+                    }
+                }
+
+                return string.Empty;
+            }
+
+            var labels = new ProductionDrawingLabels
+            {
+                UserUuid = Get("user_uuid"),
+                BrandCode = Get("brand_code"),
+                ModelCode = Get("model_code"),
+                GlobalCategoryCode = Get("global_category_code", "global_cat_code"),
+                EdgeCode = Get("prod_drawing_edge_code"),
+                PanelSizeCode = Get("prod_drawing_panel_size_code"),
+                PerforationCode = Get("prod_drawing_perforation_code")
+            };
+
+            return labels.HasAnyValue ? labels : null;
         }
     }
 }

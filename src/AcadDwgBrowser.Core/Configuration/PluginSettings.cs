@@ -109,10 +109,24 @@ namespace AcadDwgBrowser.Core.Configuration
         /// <summary>GET — swagger /content/filters/{code}</summary>
         public string ContentFiltersPath { get; set; } = "/content/filters/{code}";
 
+        /// <summary>GET — swagger /api/v2/entities/{type}</summary>
+        public string EntitiesPath { get; set; } = "/api/v2/entities/{type}";
+
+        /// <summary>GET — swagger /api/v2/globalMenuCategories</summary>
+        public string GlobalMenuCategoriesPath { get; set; } = "/api/v2/globalMenuCategories";
+
         public string BuildContentFiltersUrl(string? code = null) =>
             (ContentFiltersPath ?? "/content/filters/{code}")
                 .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))
                 .TrimStart('/');
+
+        public string BuildEntitiesUrl(string entityType) =>
+            (EntitiesPath ?? "/api/v2/entities/{type}")
+                .Replace("{type}", Uri.EscapeDataString(entityType ?? string.Empty))
+                .TrimStart('/');
+
+        public string BuildGlobalMenuCategoriesUrl() =>
+            (GlobalMenuCategoriesPath ?? "/api/v2/globalMenuCategories").TrimStart('/');
 
         public string BuildContentCreateUrl(string? code = null) =>
             (ContentCreatePath ?? "/content/{code}")

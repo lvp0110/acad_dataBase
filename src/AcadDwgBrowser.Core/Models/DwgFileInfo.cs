@@ -29,6 +29,9 @@ namespace AcadDwgBrowser.Core.Models
         /// <summary>Form field code for the DWG (e.g. file_dwg), used when uploading.</summary>
         public string? DwgFieldCode { get; set; }
 
+        /// <summary>Label field codes from content payload (brand, model, …).</summary>
+        public ProductionDrawingLabels? Labels { get; set; }
+
         public override string ToString() => Name;
     }
 }

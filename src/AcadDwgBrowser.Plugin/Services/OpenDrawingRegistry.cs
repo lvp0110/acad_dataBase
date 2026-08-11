@@ -153,7 +153,8 @@ namespace AcadDwgBrowser.Plugin.Services
                 ContentType = src.ContentType,
                 GroupId = src.GroupId,
                 LocalPath = src.LocalPath,
-                DwgFieldCode = src.DwgFieldCode
+                DwgFieldCode = src.DwgFieldCode,
+                Labels = src.Labels?.Clone()
             };
     }
 }

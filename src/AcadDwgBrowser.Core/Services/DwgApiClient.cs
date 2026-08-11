@@ -136,6 +136,8 @@ namespace AcadDwgBrowser.Core.Services
                 preferredName = resolved.FileName ?? file.Name;
                 if (!string.IsNullOrWhiteSpace(resolved.FieldCode))
                     file.DwgFieldCode = resolved.FieldCode;
+                if (resolved.Labels != null)
+                    file.Labels = resolved.Labels;
             }
 
             var safeName = MakeSafeFileName(string.IsNullOrWhiteSpace(preferredName) ? file.Id + ".dwg" : preferredName);
@@ -253,10 +255,33 @@ namespace AcadDwgBrowser.Core.Services
             progress?.Report(1.0);
         }
 
+        public async Task DeleteContentAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                throw new ArgumentException("Id контента пуст.", nameof(contentId));
+
+            var endpoint = _settings.BuildContentDetailUrl(contentId);
+            AuthDebugLog.Write("DELETE " + endpoint);
+
+            using (var request = new HttpRequestMessage(HttpMethod.Delete, endpoint))
+            using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
+            {
+                var status = (int)response.StatusCode;
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                AuthDebugLog.Write("Delete content HTTP " + status + " body=" + Truncate(body));
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException(ExtractErrorMessage(body, status));
+                EnsureApiSuccess(body);
+            }
+        }
+
         public async Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(
             CancellationToken cancellationToken = default)
         {
             var endpoint = _settings.BuildContentFiltersUrl();
+            List<FilterEntity> filters;
             using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
             {
                 await EnsureOkAsync(response).ConfigureAwait(false);
@@ -265,8 +290,153 @@ namespace AcadDwgBrowser.Core.Services
                               ?? new FiltersResponse();
                 if (payload.Code >= 400)
                     throw new InvalidOperationException(payload.Error ?? "Ошибка фильтров/меток.");
-                return payload.Data ?? new List<FilterEntity>();
+                filters = payload.Data ?? new List<FilterEntity>();
             }
+
+            // /content/filters returns only values already used in content.
+            // Full catalogs live in /api/v2/entities and global menu categories.
+            await EnrichFilterOptionsAsync(filters, "brand_code", "brand", cancellationToken)
+                .ConfigureAwait(false);
+            await EnrichFilterOptionsAsync(filters, "model_code", "model", cancellationToken)
+                .ConfigureAwait(false);
+            await EnrichGlobalCategoryOptionsAsync(filters, cancellationToken).ConfigureAwait(false);
+
+            AuthDebugLog.Write(
+                "Filters enriched: " +
+                string.Join(", ", filters.Select(f => f.Code + "=" + (f.Options?.Count ?? 0))));
+
+            return filters;
+        }
+
+        public async Task<ProductionDrawingLabels?> GetContentLabelsAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                return null;
+
+            var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+            return ProductionDrawingLabels.TryFromPayload(detail.Payload);
+        }
+
+        private async Task EnrichFilterOptionsAsync(
+            List<FilterEntity> filters,
+            string filterCode,
+            string entityType,
+            CancellationToken cancellationToken)
+        {
+            var entity = filters.FirstOrDefault(f =>
+                string.Equals(f.Code, filterCode, StringComparison.OrdinalIgnoreCase));
+            if (entity == null)
+                return;
+
+            try
+            {
+                var options = await GetEntityOptionsAsync(entityType, cancellationToken)
+                    .ConfigureAwait(false);
+                if (options.Count > 0)
+                    entity.Options = MergeOptions(entity.Options, options);
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("Enrich " + filterCode + " from entities/" + entityType + ": " + ex.Message);
+            }
+        }
+
+        private async Task EnrichGlobalCategoryOptionsAsync(
+            List<FilterEntity> filters,
+            CancellationToken cancellationToken)
+        {
+            var entity = filters.FirstOrDefault(f =>
+                string.Equals(f.Code, "global_cat_code", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(f.Code, "global_category_code", StringComparison.OrdinalIgnoreCase));
+            if (entity == null)
+                return;
+
+            try
+            {
+                var endpoint = _settings.BuildGlobalMenuCategoriesUrl();
+                using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+                {
+                    if (!response.IsSuccessStatusCode)
+                        return;
+
+                    var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    var payload = JsonSerializer.Deserialize<GlobalMenuCategoriesResponse>(json, JsonOptions)
+                                  ?? new GlobalMenuCategoriesResponse();
+                    if (payload.Code >= 400 || payload.Data == null || payload.Data.Count == 0)
+                        return;
+
+                    var options = payload.Data
+                        .Where(c => !string.IsNullOrWhiteSpace(c.Type))
+                        .Select(c => new FilterOption
+                        {
+                            Code = c.Type.Trim(),
+                            Name = string.IsNullOrWhiteSpace(c.Name) ? c.Type.Trim() : c.Name.Trim()
+                        })
+                        .ToList();
+                    entity.Options = MergeOptions(entity.Options, options);
+                }
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("Enrich global_cat_code: " + ex.Message);
+            }
+        }
+
+        private async Task<List<FilterOption>> GetEntityOptionsAsync(
+            string entityType,
+            CancellationToken cancellationToken)
+        {
+            var endpoint = _settings.BuildEntitiesUrl(entityType);
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+            {
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var payload = JsonSerializer.Deserialize<EntitiesListResponse>(json, JsonOptions)
+                              ?? new EntitiesListResponse();
+                if (payload.Code >= 400)
+                    throw new InvalidOperationException(payload.Error ?? "Ошибка справочника " + entityType);
+
+                return (payload.Data ?? new List<EntityItem>())
+                    .Where(e => !string.IsNullOrWhiteSpace(e.Code))
+                    .Select(e => new FilterOption
+                    {
+                        Code = e.Code.Trim(),
+                        Name = string.IsNullOrWhiteSpace(e.Name) ? e.Code.Trim() : e.Name.Trim()
+                    })
+                    .ToList();
+            }
+        }
+
+        private static List<FilterOption> MergeOptions(
+            List<FilterOption>? existing,
+            List<FilterOption> extra)
+        {
+            var map = new Dictionary<string, FilterOption>(StringComparer.OrdinalIgnoreCase);
+            foreach (var opt in existing ?? new List<FilterOption>())
+            {
+                if (opt == null || string.IsNullOrWhiteSpace(opt.Code))
+                    continue;
+                map[opt.Code.Trim()] = opt;
+            }
+
+            foreach (var opt in extra)
+            {
+                if (opt == null || string.IsNullOrWhiteSpace(opt.Code))
+                    continue;
+                var code = opt.Code.Trim();
+                if (!map.TryGetValue(code, out var prev)
+                    || string.IsNullOrWhiteSpace(prev.Name)
+                    || string.Equals(prev.Name, prev.Code, StringComparison.Ordinal))
+                {
+                    map[code] = opt;
+                }
+            }
+
+            return map.Values
+                .OrderBy(o => o.Name ?? o.Code, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
         }
 
         public async Task<DwgFileInfo> CreateContentAsync(
@@ -367,7 +537,8 @@ namespace AcadDwgBrowser.Core.Services
                 DwgFieldCode = fieldCode,
                 ContentType = _settings.ResolveContentType(),
                 Status = "draft",
-                UpdatedAt = DateTimeOffset.Now
+                UpdatedAt = DateTimeOffset.Now,
+                Labels = labels.Clone()
             };
         }
 
@@ -471,7 +642,7 @@ namespace AcadDwgBrowser.Core.Services
             }
         }
 
-        private async Task<(string Url, string? FileName, string? FieldCode)> ResolveDownloadFromContentAsync(
+        private async Task<(string Url, string? FileName, string? FieldCode, ProductionDrawingLabels? Labels)> ResolveDownloadFromContentAsync(
             string contentId,
             CancellationToken cancellationToken)
         {
@@ -486,6 +657,7 @@ namespace AcadDwgBrowser.Core.Services
             }
 
             var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+            var labels = ProductionDrawingLabels.TryFromPayload(detail.Payload);
             var files = ContentPayloadFileExtractor.Extract(detail.Payload, dwgFieldCodes);
             if (files.Count == 0)
                 throw new InvalidOperationException(
@@ -515,7 +687,7 @@ namespace AcadDwgBrowser.Core.Services
                 && !Path.HasExtension(name))
                 name += ".dwg";
 
-            return (url, name, pick.FieldCode);
+            return (url, name, pick.FieldCode, labels);
         }
 
         private async Task<string> ResolveDwgFieldCodeAsync(
