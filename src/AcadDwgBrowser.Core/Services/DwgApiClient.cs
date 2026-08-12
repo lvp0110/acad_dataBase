@@ -141,10 +141,11 @@ namespace AcadDwgBrowser.Core.Services
                     file.Labels = resolved.Labels;
             }
 
-            var safeName = (!string.IsNullOrWhiteSpace(file.Id)
-                               ? file.Id.Replace("-", string.Empty)
-                               : Guid.NewGuid().ToString("N"))
-                           + ".dwg";
+            // Local file / AutoCAD tab title = catalog display name.
+            var display = !string.IsNullOrWhiteSpace(file.Name)
+                ? file.Name
+                : preferredName;
+            var safeName = MakeSafeDwgFileName(display, file.Id);
             var targetPath = Path.Combine(destinationDirectory, safeName);
             var tempPath = targetPath + ".partial";
 
@@ -1302,6 +1303,24 @@ namespace AcadDwgBrowser.Core.Services
             foreach (var c in Path.GetInvalidFileNameChars())
                 name = name.Replace(c, '_');
             return name.Trim();
+        }
+
+        /// <summary>
+        /// Catalog display name → local .dwg file name (also used as AutoCAD tab title).
+        /// </summary>
+        private static string MakeSafeDwgFileName(string? displayName, string? fallbackId)
+        {
+            var safe = MakeSafeFileName(displayName ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(safe))
+            {
+                safe = !string.IsNullOrWhiteSpace(fallbackId)
+                    ? fallbackId!.Replace("-", string.Empty)
+                    : Guid.NewGuid().ToString("N");
+            }
+
+            if (!safe.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
+                safe += ".dwg";
+            return safe;
         }
     }
 }

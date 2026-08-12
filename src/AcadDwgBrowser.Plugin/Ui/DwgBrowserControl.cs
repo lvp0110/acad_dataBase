@@ -1053,6 +1053,49 @@ namespace AcadDwgBrowser.Plugin.Ui
                     updated.Status = file.Status ?? updated.Status;
                     updated.Labels = file.Labels?.Clone() ?? updated.Labels;
                     RememberDisplayName(updated.Id, newName);
+
+                    // Align local file + AutoCAD tab with catalog name.
+                    try
+                    {
+                        var destDir = PluginApp.Settings.ResolveDownloadDirectory();
+                        Directory.CreateDirectory(destDir);
+                        var newLocal = BuildCatalogLocalPath(destDir, newName, updated.Id);
+                        var activePath = AcadDocumentService.TryGetActiveDocumentPath();
+                        var isActive = !string.IsNullOrWhiteSpace(file.LocalPath)
+                            && !string.IsNullOrWhiteSpace(activePath)
+                            && string.Equals(
+                                Path.GetFullPath(file.LocalPath!),
+                                Path.GetFullPath(activePath!),
+                                StringComparison.OrdinalIgnoreCase);
+
+                        if (isActive)
+                        {
+                            newLocal = AcadDocumentService.SaveActiveDocumentAs(newLocal);
+                            updated.LocalPath = newLocal;
+                        }
+                        else if (!string.IsNullOrWhiteSpace(file.LocalPath)
+                                 && File.Exists(file.LocalPath)
+                                 && !string.Equals(
+                                     Path.GetFullPath(file.LocalPath),
+                                     Path.GetFullPath(newLocal),
+                                     StringComparison.OrdinalIgnoreCase))
+                        {
+                            ClearReadOnlyIfNeeded(newLocal);
+                            if (File.Exists(newLocal))
+                                File.Delete(newLocal);
+                            File.Move(file.LocalPath!, newLocal);
+                            updated.LocalPath = newLocal;
+                        }
+                        else if (string.IsNullOrWhiteSpace(updated.LocalPath))
+                        {
+                            updated.LocalPath = newLocal;
+                        }
+                    }
+                    catch
+                    {
+                        // Keep previous local path if rename on disk failed.
+                    }
+
                     ApplyUpdatedCatalogItem(file.Id, updated);
                     UpdateListItemName(updated);
                     if (!string.IsNullOrWhiteSpace(updated.LocalPath))
@@ -1492,8 +1535,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 var destDir = PluginApp.Settings.ResolveDownloadDirectory();
                 Directory.CreateDirectory(destDir);
-                // ASCII work copy — display name goes to API "code", not file name.
-                var localPath = Path.Combine(destDir, Guid.NewGuid().ToString("N") + ".dwg");
+                var localPath = BuildCatalogLocalPath(destDir, suggested, null);
                 localPath = AcadDocumentService.SaveActiveDocumentAs(localPath);
 
                 SetStatus("Создание в каталоге…");
@@ -1693,28 +1735,69 @@ namespace AcadDwgBrowser.Plugin.Ui
         }
 
         /// <summary>
-        /// Stable writable work copy under Downloads\{contentId}.dwg (ASCII-safe for AutoCAD).
+        /// Work copy under Downloads\{catalogName}.dwg so AutoCAD tab matches catalog.
         /// </summary>
         private string ResolveWritableWorkPath(DwgFileInfo file, string? fallbackPath)
         {
+            var preferred = BuildCatalogLocalPath(
+                PluginApp.Settings.ResolveDownloadDirectory(),
+                file.Name,
+                file.Id);
+
+            string? candidate = null;
             if (!string.IsNullOrWhiteSpace(file.LocalPath)
                 && Path.IsPathRooted(file.LocalPath)
                 && string.Equals(Path.GetExtension(file.LocalPath), ".dwg", StringComparison.OrdinalIgnoreCase))
             {
-                return Path.GetFullPath(file.LocalPath);
+                candidate = Path.GetFullPath(file.LocalPath);
             }
-
-            if (!string.IsNullOrWhiteSpace(fallbackPath)
-                && Path.IsPathRooted(fallbackPath)
-                && string.Equals(Path.GetExtension(fallbackPath), ".dwg", StringComparison.OrdinalIgnoreCase))
+            else if (!string.IsNullOrWhiteSpace(fallbackPath)
+                     && Path.IsPathRooted(fallbackPath)
+                     && string.Equals(Path.GetExtension(fallbackPath), ".dwg", StringComparison.OrdinalIgnoreCase))
             {
-                return Path.GetFullPath(fallbackPath);
+                candidate = Path.GetFullPath(fallbackPath);
             }
 
-            var idPart = !string.IsNullOrWhiteSpace(file.Id)
-                ? file.Id.Replace("-", string.Empty)
-                : Guid.NewGuid().ToString("N");
-            return Path.Combine(PluginApp.Settings.ResolveDownloadDirectory(), idPart + ".dwg");
+            if (candidate != null)
+            {
+                var want = Path.GetFileNameWithoutExtension(preferred);
+                var have = Path.GetFileNameWithoutExtension(candidate);
+                if (string.Equals(want, have, StringComparison.OrdinalIgnoreCase))
+                    return candidate;
+            }
+
+            return preferred;
+        }
+
+        private static string BuildCatalogLocalPath(string directory, string? displayName, string? fallbackId)
+        {
+            var safe = MakeSafeFileName(displayName ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(safe))
+            {
+                safe = !string.IsNullOrWhiteSpace(fallbackId)
+                    ? fallbackId!.Replace("-", string.Empty)
+                    : Guid.NewGuid().ToString("N");
+            }
+
+            if (!safe.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
+                safe += ".dwg";
+            return Path.Combine(directory, safe);
+        }
+
+        private static void ClearReadOnlyIfNeeded(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return;
+                var attrs = File.GetAttributes(path);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+            }
+            catch
+            {
+                // ignore
+            }
         }
 
         private void ApplyUpdatedCatalogItem(string oldId, DwgFileInfo updated)
