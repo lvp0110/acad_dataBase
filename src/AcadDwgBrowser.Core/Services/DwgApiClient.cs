@@ -229,19 +229,11 @@ namespace AcadDwgBrowser.Core.Services
                     resolvedLabels.PerforationCode = labels.PerforationCode;
             }
 
-            var name = !string.IsNullOrWhiteSpace(newName)
+            // Explicit rename: always use the exact name entered by the user.
+            // Otherwise keep a stable title (never temporary replace codes).
+            var name = hasRename
                 ? newName!.Trim()
-                : (!string.IsNullOrWhiteSpace(detail.Name) ? detail.Name.Trim() : contentId);
-
-            // Try payload "code" as display name when detail.Name is empty.
-            if ((string.IsNullOrWhiteSpace(newName) || string.Equals(name, contentId, StringComparison.Ordinal))
-                && detail.Payload.ValueKind == JsonValueKind.Object
-                && detail.Payload.TryGetProperty("code", out var codeEl)
-                && codeEl.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(codeEl.GetString()))
-            {
-                name = codeEl.GetString()!.Trim();
-            }
+                : ResolveStableContentName(detail, null, contentId);
 
             // --- DWG replace: create new + delete old (PUT+file is broken on server) ---
             if (hasFile)
@@ -251,8 +243,8 @@ namespace AcadDwgBrowser.Core.Services
                         "Для сохранения DWG нужны все метки: "
                         + (resolvedLabels?.MissingFieldName() ?? "метки"));
 
-                // Same "code" cannot be created twice — use a temporary unique code, then rename.
-                var tempCode = BuildUniqueTempCode(name);
+                // Temporary unique code must NOT become the visible title.
+                var tempCode = BuildUniqueTempCode();
                 AuthDebugLog.Write(
                     "Replace content via create+delete oldId=" + contentId
                     + " name=" + name + " tempCode=" + tempCode);
@@ -288,7 +280,7 @@ namespace AcadDwgBrowser.Core.Services
                     AuthDebugLog.Write("Delete old content after replace failed: " + ex.Message);
                 }
 
-                // Restore the original display name (PUT without file works).
+                // Always restore the original display name (PUT without file).
                 try
                 {
                     await PutContentMetaAsync(
@@ -298,14 +290,13 @@ namespace AcadDwgBrowser.Core.Services
                             created.DwgFieldCode ?? dwgFieldCode,
                             cancellationToken)
                         .ConfigureAwait(false);
-                    created.Name = name;
                 }
                 catch (Exception ex)
                 {
                     AuthDebugLog.Write("Rename after replace failed: " + ex.Message);
-                    created.Name = tempCode;
                 }
 
+                created.Name = name;
                 created.LocalPath = localDwgPath;
                 created.Status = "draft";
                 created.Labels = resolvedLabels.Clone();
@@ -344,6 +335,10 @@ namespace AcadDwgBrowser.Core.Services
             CancellationToken cancellationToken,
             IProgress<double>? progress = null)
         {
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Имя чертежа пусто.", nameof(name));
+
+            name = name.Trim();
             var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
             var fieldCode = await ResolveDwgFieldCodeAsync(detail, dwgFieldCode, cancellationToken)
                 .ConfigureAwait(false);
@@ -355,8 +350,38 @@ namespace AcadDwgBrowser.Core.Services
 
             using (var form = new MultipartFormDataContent())
             {
+                void AddField(string key, string value) =>
+                    form.Add(new StringContent(value ?? string.Empty, Encoding.UTF8), key);
+
+                // Live create API expects flat fields; send the same on rename/update.
+                AddField("code", name);
+                AddField("name", name);
+
+                var resolved = labels;
+                if (resolved == null || !resolved.HasAnyValue)
+                    resolved = ProductionDrawingLabels.TryFromPayload(detail.Payload);
+
+                if (resolved != null && resolved.HasAnyValue)
+                {
+                    if (!string.IsNullOrWhiteSpace(resolved.UserUuid))
+                        AddField("user_uuid", resolved.UserUuid);
+                    if (!string.IsNullOrWhiteSpace(resolved.BrandCode))
+                        AddField("brand_code", resolved.BrandCode);
+                    if (!string.IsNullOrWhiteSpace(resolved.ModelCode))
+                        AddField("model_code", resolved.ModelCode);
+                    if (!string.IsNullOrWhiteSpace(resolved.GlobalCategoryCode))
+                        AddField("global_category_code", resolved.GlobalCategoryCode);
+                    if (!string.IsNullOrWhiteSpace(resolved.EdgeCode))
+                        AddField("prod_drawing_edge_code", resolved.EdgeCode);
+                    if (!string.IsNullOrWhiteSpace(resolved.PanelSizeCode))
+                        AddField("prod_drawing_panel_size_code", resolved.PanelSizeCode);
+                    if (!string.IsNullOrWhiteSpace(resolved.PerforationCode))
+                        AddField("prod_drawing_perforation_code", resolved.PerforationCode);
+                }
+
                 form.Add(new StringContent(payloadJson, Encoding.UTF8), "payload");
-                AuthDebugLog.Write("PUT " + endpoint + " (no file) payload=" + Truncate(payloadJson));
+                AuthDebugLog.Write(
+                    "PUT " + endpoint + " rename code=" + name + " payload=" + Truncate(payloadJson));
 
                 using (var request = new HttpRequestMessage(HttpMethod.Put, endpoint) { Content = form })
                 using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
@@ -373,12 +398,98 @@ namespace AcadDwgBrowser.Core.Services
             progress?.Report(1.0);
         }
 
-        private static string BuildUniqueTempCode(string name)
+        private static string BuildUniqueTempCode() =>
+            "tmp-" + Guid.NewGuid().ToString("N");
+
+        /// <summary>
+        /// Picks a stable user-facing title. Temporary replace codes (tmp-… / "name #abc123")
+        /// must never become the displayed catalog name.
+        /// </summary>
+        private static string ResolveStableContentName(
+            ContentFullInfo detail,
+            string? preferredName,
+            string contentId)
         {
-            var baseName = string.IsNullOrWhiteSpace(name) ? "drawing" : name.Trim();
-            if (baseName.Length > 40)
-                baseName = baseName.Substring(0, 40);
-            return baseName + " #" + Guid.NewGuid().ToString("N").Substring(0, 6);
+            if (IsStableDisplayName(preferredName))
+                return preferredName!.Trim();
+
+            string? payloadCode = null;
+            if (detail.Payload.ValueKind == JsonValueKind.Object
+                && detail.Payload.TryGetProperty("code", out var codeEl)
+                && codeEl.ValueKind == JsonValueKind.String)
+            {
+                payloadCode = codeEl.GetString();
+            }
+
+            foreach (var candidate in new[] { detail.Name, payloadCode })
+            {
+                var cleaned = SanitizeDisplayName(candidate);
+                if (IsStableDisplayName(cleaned))
+                    return cleaned!;
+            }
+
+            return !string.IsNullOrWhiteSpace(contentId) ? contentId : "drawing";
+        }
+
+        private static string? SanitizeDisplayName(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            var s = value.Trim();
+
+            // Strip stacked temporary suffixes from older builds: "name #a1b2c3"
+            while (true)
+            {
+                var idx = s.LastIndexOf(" #", StringComparison.Ordinal);
+                if (idx <= 0 || idx + 2 >= s.Length)
+                    break;
+
+                var suffix = s.Substring(idx + 2);
+                if (suffix.Length == 6 && IsHex(suffix))
+                {
+                    s = s.Substring(0, idx).TrimEnd();
+                    continue;
+                }
+
+                break;
+            }
+
+            if (s.StartsWith("tmp-", StringComparison.OrdinalIgnoreCase)
+                && s.Length == 4 + 32
+                && IsHex(s.Substring(4)))
+            {
+                return null;
+            }
+
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+
+        private static bool IsStableDisplayName(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+            if (LooksLikeUuid(value!))
+                return false;
+            if (value!.StartsWith("tmp-", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (value.StartsWith("Без имени", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return true;
+        }
+
+        private static bool IsHex(string value)
+        {
+            foreach (var ch in value)
+            {
+                var isHex = (ch >= '0' && ch <= '9')
+                            || (ch >= 'a' && ch <= 'f')
+                            || (ch >= 'A' && ch <= 'F');
+                if (!isHex)
+                    return false;
+            }
+
+            return value.Length > 0;
         }
 
         public async Task DeleteContentAsync(
@@ -878,11 +989,12 @@ namespace AcadDwgBrowser.Core.Services
             }
 
             // production_drawings uses "code" as the document name field.
-            var name = !string.IsNullOrWhiteSpace(newName) ? newName!.Trim() : detail.Name;
-            if (!string.IsNullOrWhiteSpace(name))
+            // On rename, write exactly the name provided by the caller.
+            if (!string.IsNullOrWhiteSpace(newName))
             {
-                root["code"] = name;
-                root["name"] = name;
+                var exact = newName!.Trim();
+                root["code"] = exact;
+                root["name"] = exact;
             }
 
             if (labels != null && labels.HasAnyValue)
@@ -1108,11 +1220,14 @@ namespace AcadDwgBrowser.Core.Services
 
         private static string ResolveDisplayName(ContentInfo c)
         {
-            if (!string.IsNullOrWhiteSpace(c.Name) && !LooksLikeUuid(c.Name))
-                return c.Name.Trim();
+            // production_drawings title is payload/list "code"; list "name" is often stale.
+            var fromCode = SanitizeDisplayName(c.Code);
+            var fromName = SanitizeDisplayName(c.Name);
 
-            if (!string.IsNullOrWhiteSpace(c.Code) && !LooksLikeUuid(c.Code!))
-                return c.Code!.Trim();
+            if (IsStableDisplayName(fromCode))
+                return fromCode!;
+            if (IsStableDisplayName(fromName))
+                return fromName!;
 
             if (!string.IsNullOrWhiteSpace(c.Id))
             {
