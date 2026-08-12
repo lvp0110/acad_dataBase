@@ -34,9 +34,10 @@ namespace AcadDwgBrowser.Core.Services
             CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Updates content. Labels/rename: PUT /content/{id} without file.
-        /// DWG replace: API PUT+file is broken server-side, so create new + delete old.
-        /// Returns the resulting catalog item (may have a new Id after DWG replace).
+        /// Updates content. Labels: PUT /content/{id} without renaming.
+        /// Rename: pass newName (only from «Задать имя…»).
+        /// DWG replace: create new + delete old, then restore existing code.
+        /// knownDisplayName is a hint to preserve title when payload.name is stale.
         /// </summary>
         Task<DwgFileInfo> UpdateContentAsync(
             string contentId,
@@ -44,6 +45,7 @@ namespace AcadDwgBrowser.Core.Services
             string? localDwgPath = null,
             string? dwgFieldCode = null,
             ProductionDrawingLabels? labels = null,
+            string? knownDisplayName = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default);
 

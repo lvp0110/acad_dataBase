@@ -109,6 +109,9 @@ namespace AcadDwgBrowser.Core.Configuration
         /// <summary>GET — swagger /content/filters/{code}</summary>
         public string ContentFiltersPath { get; set; } = "/content/filters/{code}";
 
+        /// <summary>GET — swagger /content/references/{code} (full select catalogs).</summary>
+        public string ContentReferencesPath { get; set; } = "/content/references/{code}";
+
         /// <summary>GET — swagger /api/v2/entities/{type}</summary>
         public string EntitiesPath { get; set; } = "/api/v2/entities/{type}";
 
@@ -125,6 +128,15 @@ namespace AcadDwgBrowser.Core.Configuration
             (ContentFiltersPath ?? "/content/filters/{code}")
                 .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))
                 .TrimStart('/');
+
+        /// <summary>
+        /// Full reference list. Default API limit is 20 — always request a high limit.
+        /// </summary>
+        public string BuildContentReferencesUrl(string referenceCode, int limit = 500) =>
+            (ContentReferencesPath ?? "/content/references/{code}")
+                .Replace("{code}", Uri.EscapeDataString(referenceCode ?? string.Empty))
+                .TrimStart('/')
+            + "?limit=" + Math.Max(1, limit) + "&offset=0";
 
         public string BuildEntitiesUrl(string entityType) =>
             (EntitiesPath ?? "/api/v2/entities/{type}")

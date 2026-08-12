@@ -307,6 +307,7 @@ namespace AcadDwgBrowser.Core.Services
             string? localDwgPath = null,
             string? dwgFieldCode = null,
             ProductionDrawingLabels? labels = null,
+            string? knownDisplayName = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default)
         {
@@ -338,11 +339,10 @@ namespace AcadDwgBrowser.Core.Services
                     resolvedLabels.PerforationCode = labels.PerforationCode;
             }
 
-            // Explicit rename: always use the exact name entered by the user.
-            // Otherwise keep a stable title (never temporary replace codes).
+            // Explicit rename only (Задать имя). Save must keep payload.code unchanged.
             var name = hasRename
                 ? newName!.Trim()
-                : ResolveStableContentName(detail, null, contentId);
+                : ResolveStableContentName(detail, knownDisplayName, contentId);
 
             // --- DWG replace: create new + delete old (PUT+file is broken on server) ---
             if (hasFile)
@@ -513,15 +513,13 @@ namespace AcadDwgBrowser.Core.Services
         /// <summary>
         /// Picks a stable user-facing title. Temporary replace codes (tmp-… / "name #abc123")
         /// must never become the displayed catalog name.
+        /// For production_drawings the real title is payload.code; detail.Name is often stale.
         /// </summary>
         private static string ResolveStableContentName(
             ContentFullInfo detail,
             string? preferredName,
             string contentId)
         {
-            if (IsStableDisplayName(preferredName))
-                return preferredName!.Trim();
-
             string? payloadCode = null;
             if (detail.Payload.ValueKind == JsonValueKind.Object
                 && detail.Payload.TryGetProperty("code", out var codeEl)
@@ -530,14 +528,16 @@ namespace AcadDwgBrowser.Core.Services
                 payloadCode = codeEl.GetString();
             }
 
-            foreach (var candidate in new[] { detail.Name, payloadCode })
+            // payload.code is source of truth; preferred/detail.Name are fallbacks only.
+            foreach (var candidate in new[] { payloadCode, preferredName, detail.Name })
             {
                 var cleaned = SanitizeDisplayName(candidate);
                 if (IsStableDisplayName(cleaned))
                     return cleaned!;
             }
 
-            return !string.IsNullOrWhiteSpace(contentId) ? contentId : "drawing";
+            throw new InvalidOperationException(
+                "Не удалось определить имя чертежа (payload.code). Задайте его через «Задать имя…».");
         }
 
         private static string? SanitizeDisplayName(string? value)
@@ -779,12 +779,32 @@ namespace AcadDwgBrowser.Core.Services
             }
 
             // /content/filters returns only values already used in content.
-            // Full catalogs live in /api/v2/entities and global menu categories.
-            await EnrichFilterOptionsAsync(filters, "brand_code", "brand", cancellationToken)
+            // Full catalogs: entities (brand/model) + references (user/sizes/edge/perf).
+            var brandTask = TryGetEntityOptionsAsync("brand", cancellationToken);
+            var modelTask = TryGetEntityOptionsAsync("model", cancellationToken);
+            var userTask = TryGetReferenceOptionsAsync("user", cancellationToken);
+            var sizeTask = TryGetReferenceOptionsAsync("prod_drawing_panel_size", cancellationToken);
+            var edgeTask = TryGetReferenceOptionsAsync("prod_drawing_edge", cancellationToken);
+            var perfTask = TryGetReferenceOptionsAsync("prod_drawing_panel_perforation", cancellationToken);
+            var catTask = EnrichGlobalCategoryOptionsAsync(filters, cancellationToken);
+
+            await Task.WhenAll(
+                    brandTask, modelTask, userTask, sizeTask, edgeTask, perfTask, catTask)
                 .ConfigureAwait(false);
-            await EnrichFilterOptionsAsync(filters, "model_code", "model", cancellationToken)
-                .ConfigureAwait(false);
-            await EnrichGlobalCategoryOptionsAsync(filters, cancellationToken).ConfigureAwait(false);
+
+            ApplyCatalogOptions(filters, "brand_code", brandTask.Result);
+            var models = modelTask.Result;
+            if (models != null && models.Count > 0)
+            {
+                foreach (var opt in models)
+                    opt.Name = StripBrandPrefixFromModelName(opt.Name, opt.Code);
+            }
+
+            ApplyCatalogOptions(filters, "model_code", models);
+            ApplyCatalogOptions(filters, "user_uuid", userTask.Result);
+            ApplyCatalogOptions(filters, "prod_drawing_panel_size_code", sizeTask.Result);
+            ApplyCatalogOptions(filters, "prod_drawing_edge_code", edgeTask.Result);
+            ApplyCatalogOptions(filters, "prod_drawing_perforation_code", perfTask.Result);
 
             AuthDebugLog.Write(
                 "Filters enriched: " +
@@ -832,28 +852,33 @@ namespace AcadDwgBrowser.Core.Services
             };
         }
 
-        private async Task EnrichFilterOptionsAsync(
+        private static void ApplyCatalogOptions(
             List<FilterEntity> filters,
             string filterCode,
-            string entityType,
-            CancellationToken cancellationToken)
+            List<FilterOption>? options)
+        {
+            if (options == null || options.Count == 0)
+                return;
+
+            var entity = EnsureFilterEntity(filters, filterCode);
+            entity.Options = MergeOptions(options, entity.Options);
+        }
+
+        private static FilterEntity EnsureFilterEntity(List<FilterEntity> filters, string filterCode)
         {
             var entity = filters.FirstOrDefault(f =>
                 string.Equals(f.Code, filterCode, StringComparison.OrdinalIgnoreCase));
-            if (entity == null)
-                return;
+            if (entity != null)
+                return entity;
 
-            try
+            entity = new FilterEntity
             {
-                var options = await GetEntityOptionsAsync(entityType, cancellationToken)
-                    .ConfigureAwait(false);
-                if (options.Count > 0)
-                    entity.Options = MergeOptions(entity.Options, options);
-            }
-            catch (Exception ex)
-            {
-                AuthDebugLog.Write("Enrich " + filterCode + " from entities/" + entityType + ": " + ex.Message);
-            }
+                Code = filterCode,
+                Name = filterCode,
+                Options = new List<FilterOption>()
+            };
+            filters.Add(entity);
+            return entity;
         }
 
         private async Task EnrichGlobalCategoryOptionsAsync(
@@ -864,7 +889,7 @@ namespace AcadDwgBrowser.Core.Services
                 string.Equals(f.Code, "global_cat_code", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(f.Code, "global_category_code", StringComparison.OrdinalIgnoreCase));
             if (entity == null)
-                return;
+                entity = EnsureFilterEntity(filters, "global_cat_code");
 
             try
             {
@@ -888,12 +913,69 @@ namespace AcadDwgBrowser.Core.Services
                             Name = string.IsNullOrWhiteSpace(c.Name) ? c.Type.Trim() : c.Name.Trim()
                         })
                         .ToList();
-                    entity.Options = MergeOptions(entity.Options, options);
+                    entity.Options = MergeOptions(options, entity.Options);
                 }
             }
             catch (Exception ex)
             {
                 AuthDebugLog.Write("Enrich global_cat_code: " + ex.Message);
+            }
+        }
+
+        private async Task<List<FilterOption>?> TryGetEntityOptionsAsync(
+            string entityType,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await GetEntityOptionsAsync(entityType, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("Enrich entities/" + entityType + ": " + ex.Message);
+                return null;
+            }
+        }
+
+        private async Task<List<FilterOption>?> TryGetReferenceOptionsAsync(
+            string referenceCode,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await GetReferenceOptionsAsync(referenceCode, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("Enrich references/" + referenceCode + ": " + ex.Message);
+                return null;
+            }
+        }
+
+        private async Task<List<FilterOption>> GetReferenceOptionsAsync(
+            string referenceCode,
+            CancellationToken cancellationToken)
+        {
+            var endpoint = _settings.BuildContentReferencesUrl(referenceCode);
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+            {
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var payload = JsonSerializer.Deserialize<OptionsResponse>(json, JsonOptions)
+                              ?? new OptionsResponse();
+                if (payload.Code >= 400)
+                    throw new InvalidOperationException(
+                        payload.Error ?? "Ошибка справочника references/" + referenceCode);
+
+                return (payload.Data ?? new List<FilterOption>())
+                    .Where(e => !string.IsNullOrWhiteSpace(e.Code))
+                    .Select(e => new FilterOption
+                    {
+                        Code = e.Code.Trim(),
+                        Name = string.IsNullOrWhiteSpace(e.Name) ? e.Code.Trim() : e.Name.Trim()
+                    })
+                    .ToList();
             }
         }
 
@@ -920,6 +1002,35 @@ namespace AcadDwgBrowser.Core.Services
                     })
                     .ToList();
             }
+        }
+
+        /// <summary>
+        /// Entities/model often returns "BRAND Name" or "BRAND BRAND Name" — show model name only.
+        /// </summary>
+        private static string StripBrandPrefixFromModelName(string? name, string? code)
+        {
+            var display = (name ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(display))
+                return code ?? string.Empty;
+
+            // Repeated leading token: "BON BON Albero" → "Albero"
+            var parts = display.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            while (parts.Length >= 2
+                   && string.Equals(parts[0], parts[1], StringComparison.OrdinalIgnoreCase))
+            {
+                parts = parts.Skip(1).ToArray();
+                display = string.Join(" ", parts);
+            }
+
+            // Leading uppercase brand code token when name continues after it.
+            if (parts.Length >= 2
+                && parts[0].Length <= 6
+                && parts[0] == parts[0].ToUpperInvariant())
+            {
+                display = string.Join(" ", parts.Skip(1));
+            }
+
+            return string.IsNullOrWhiteSpace(display) ? (code ?? name ?? string.Empty) : display;
         }
 
         private static List<FilterOption> MergeOptions(

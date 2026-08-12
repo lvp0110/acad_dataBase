@@ -1378,34 +1378,42 @@ namespace AcadDwgBrowser.Plugin.Ui
                             _progress.Value = Math.Max(0, Math.Min(100, (int)(p * 100)));
                     });
 
-                    var preservedName = GetEditorNameOrNull() ?? ResolveKnownDisplayName(file);
-                    if (string.IsNullOrWhiteSpace(preservedName))
+                    var preservedName = ResolveKnownDisplayName(file);
+                    if (string.IsNullOrWhiteSpace(preservedName)
+                        || preservedName.StartsWith("Без имени", StringComparison.OrdinalIgnoreCase))
                     {
-                        MessageBox.Show(
-                            this,
-                            "Укажите имя чертежа в поле «Имя чертежа».",
-                            "Сохранение",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Warning);
-                        return;
+                        // Fall back to editor text only for display after save; do not rename on save.
+                        preservedName = GetEditorNameOrNull() ?? preservedName;
                     }
 
                     DwgFileInfo updated;
                     using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                     {
+                        // newName: null — имя не меняем при сохранении (только через «Задать имя…»).
                         updated = await client.UpdateContentAsync(
                                 oldId,
-                                newName: preservedName,
+                                newName: null,
                                 localDwgPath: uploadPath,
                                 dwgFieldCode: file.DwgFieldCode,
                                 labels: labels.HasAnyValue ? labels : null,
+                                knownDisplayName: preservedName,
                                 progress: progress,
                                 cancellationToken: _cts.Token)
                             .ConfigureAwait(true);
                     }
 
-                    updated.Name = preservedName;
-                    RememberDisplayName(updated.Id, preservedName);
+                    if (!string.IsNullOrWhiteSpace(updated.Name)
+                        && !updated.Name.StartsWith("tmp-", StringComparison.OrdinalIgnoreCase)
+                        && !updated.Name.StartsWith("Без имени", StringComparison.OrdinalIgnoreCase))
+                    {
+                        preservedName = updated.Name;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(preservedName))
+                    {
+                        updated.Name = preservedName!;
+                    }
+
+                    RememberDisplayName(updated.Id, updated.Name);
                     if (!string.Equals(oldId, updated.Id, StringComparison.OrdinalIgnoreCase))
                         _displayNameById.Remove(oldId);
 
@@ -1531,34 +1539,41 @@ namespace AcadDwgBrowser.Plugin.Ui
                 });
 
                 var oldId = file.Id;
-                var preservedName = GetEditorNameOrNull() ?? ResolveKnownDisplayName(file);
-                if (string.IsNullOrWhiteSpace(preservedName))
+                var preservedName = ResolveKnownDisplayName(file);
+                if (string.IsNullOrWhiteSpace(preservedName)
+                    || preservedName.StartsWith("Без имени", StringComparison.OrdinalIgnoreCase))
                 {
-                    MessageBox.Show(
-                        this,
-                        "Укажите имя чертежа в поле «Имя чертежа».",
-                        "Сохранение",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning);
-                    return;
+                    preservedName = GetEditorNameOrNull() ?? preservedName;
                 }
 
                 DwgFileInfo updated;
                 using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                 {
+                    // Имя не меняем при сохранении — только метки/DWG.
                     updated = await client.UpdateContentAsync(
                             oldId,
-                            newName: preservedName,
+                            newName: null,
                             localDwgPath: uploadPath,
                             dwgFieldCode: file.DwgFieldCode ?? "file_dwg",
                             labels: labels.HasAnyValue ? labels : null,
+                            knownDisplayName: preservedName,
                             progress: progress,
                             cancellationToken: _cts.Token)
                         .ConfigureAwait(true);
                 }
 
-                updated.Name = preservedName;
-                RememberDisplayName(updated.Id, preservedName);
+                if (!string.IsNullOrWhiteSpace(updated.Name)
+                    && !updated.Name.StartsWith("tmp-", StringComparison.OrdinalIgnoreCase)
+                    && !updated.Name.StartsWith("Без имени", StringComparison.OrdinalIgnoreCase))
+                {
+                    preservedName = updated.Name;
+                }
+                else if (!string.IsNullOrWhiteSpace(preservedName))
+                {
+                    updated.Name = preservedName!;
+                }
+
+                RememberDisplayName(updated.Id, updated.Name);
                 if (!string.Equals(oldId, updated.Id, StringComparison.OrdinalIgnoreCase))
                     _displayNameById.Remove(oldId);
 

@@ -29,7 +29,7 @@ namespace AcadDwgBrowser.Core.Models
         public List<FilterOption> Options { get; set; } = new List<FilterOption>();
     }
 
-    /// <summary>models.FilterOption</summary>
+    /// <summary>models.FilterOption / models.Option</summary>
     public sealed class FilterOption
     {
         [JsonPropertyName("code")]
@@ -38,8 +38,24 @@ namespace AcadDwgBrowser.Core.Models
         [JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
 
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
+
         public override string ToString() =>
             string.IsNullOrWhiteSpace(Name) ? Code : Name;
+    }
+
+    /// <summary>swagger.OptionsResponse — GET /content/references/{code}</summary>
+    public sealed class OptionsResponse
+    {
+        [JsonPropertyName("code")]
+        public int Code { get; set; }
+
+        [JsonPropertyName("data")]
+        public List<FilterOption> Data { get; set; } = new List<FilterOption>();
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
     }
 
     /// <summary>swagger.EntitiesListResponse</summary>
