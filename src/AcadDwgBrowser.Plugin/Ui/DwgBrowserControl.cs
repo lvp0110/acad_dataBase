@@ -28,6 +28,7 @@ namespace AcadDwgBrowser.Plugin.Ui
         private Button _deleteButton = null!;
         private Button _renameButton = null!;
         private Button _saveButton = null!;
+        private Button _approveButton = null!;
         private TextBox _filterBox = null!;
         private TextBox _nameBox = null!;
         private GroupBox _editorGroup = null!;
@@ -336,11 +337,12 @@ namespace AcadDwgBrowser.Plugin.Ui
             var actions = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 3,
                 RowCount = 1
             };
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
             editorLayout.Controls.Add(actions, 0, 3);
 
             _renameButton = new Button
@@ -358,12 +360,23 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Text = "Сохранить",
                 Dock = DockStyle.Fill,
-                Margin = new Padding(4, 0, 0, 0),
+                Margin = new Padding(2, 0, 2, 0),
                 Font = new Font("Segoe UI", 9f),
                 Enabled = false
             };
             _saveButton.Click += async (_, __) => await SaveActiveAsync();
             actions.Controls.Add(_saveButton, 1, 0);
+
+            _approveButton = new Button
+            {
+                Text = "На согласование…",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(4, 0, 0, 0),
+                Font = new Font("Segoe UI", 9f),
+                Enabled = false
+            };
+            _approveButton.Click += async (_, __) => await SubmitForApprovalAsync();
+            actions.Controls.Add(_approveButton, 2, 0);
 
             // —— Section 2: catalog from API ——
             _catalogGroup = new GroupBox
@@ -445,10 +458,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                 HideSelection = false,
                 Font = new Font("Segoe UI", 9f)
             };
-            _list.Columns.Add("Имя", 220);
-            _list.Columns.Add("Статус", 100);
-            _list.Columns.Add("Метки", 120);
-            _list.Columns.Add("Обновлён", 120);
+            _list.Columns.Add("Имя", 200);
+            _list.Columns.Add("Статус", 80);
+            _list.Columns.Add("Метки", 100);
+            _list.Columns.Add("Комментарий", 160);
+            _list.Columns.Add("Обновлён", 110);
             _list.SelectedIndexChanged += async (_, __) =>
             {
                 UpdateCatalogActionButtons();
@@ -1006,8 +1020,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     MessageBox.Show(
                         this,
-                        "Редактирование недоступно для статуса «" + (file.Status ?? "—")
-                        + "». Доступен только просмотр.",
+                        "Имя можно менять только в статусах «draft» и «rejected» через «Задать имя…».",
                         "Переименование",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -1148,6 +1161,121 @@ namespace AcadDwgBrowser.Plugin.Ui
             UpdateActiveLabel();
             SetStatus("Имя задано: " + name + ". Нажмите «Сохранить в каталог».");
             AcadDocumentService.WriteMessage("Имя нового чертежа: " + name);
+        }
+
+        private async Task SubmitForApprovalAsync()
+        {
+            if (_busy)
+                return;
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+            {
+                ShowLogin(true);
+                return;
+            }
+
+            DwgFileInfo? file = null;
+            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _)
+                && !string.IsNullOrWhiteSpace(current.Id)
+                && IsDraftStatus(current.Status))
+            {
+                file = current;
+            }
+            else if (_list.SelectedItems.Count > 0
+                     && _list.SelectedItems[0].Tag is DwgFileInfo selected
+                     && !string.IsNullOrWhiteSpace(selected.Id)
+                     && IsDraftStatus(selected.Status))
+            {
+                file = selected;
+            }
+
+            if (file == null || string.IsNullOrWhiteSpace(file.Id))
+            {
+                MessageBox.Show(
+                    this,
+                    "Отправка на согласование доступна только для черновика из каталога.",
+                    "Согласование",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            SetBusy(true, "Загрузка согласующих…");
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+
+            try
+            {
+                await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
+
+                IReadOnlyList<ApprovalPreviewStep> steps;
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    steps = await client.GetApprovalPreviewAsync(file.Id, _cts.Token)
+                        .ConfigureAwait(true);
+                }
+
+                if (steps == null || steps.Count == 0)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Для этого чертежа нет шагов согласования (проверьте политику подписания).",
+                        "Согласование",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                StartApprovalProcessRequest? request;
+                using (var dlg = ApprovalSubmitDialog.Create(steps, ResolveKnownDisplayName(file)))
+                {
+                    var owner = FindForm() as IWin32Window ?? this;
+                    var dialogResult = dlg.ShowDialog(owner);
+                    if (dialogResult != DialogResult.OK || dlg.Result == null)
+                    {
+                        SetStatus("Отправка на согласование отменена");
+                        return;
+                    }
+
+                    request = dlg.Result;
+                }
+
+                SetStatus("Отправка на согласование…");
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    await client.StartApprovalAsync(file.Id, request, _cts.Token)
+                        .ConfigureAwait(true);
+                }
+
+                file.Status = "pending";
+                var match = _allFiles.Find(f =>
+                    string.Equals(f.Id, file.Id, StringComparison.OrdinalIgnoreCase));
+                if (match != null)
+                    match.Status = "pending";
+                if (!string.IsNullOrWhiteSpace(file.LocalPath))
+                    OpenDrawingRegistry.Register(file.LocalPath!, file);
+
+                AcadDocumentService.WriteMessage(
+                    "Отправлено на согласование: " + ResolveKnownDisplayName(file));
+                SetStatus("Отправлено на согласование: " + ResolveKnownDisplayName(file));
+
+                await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
+                ApplyDisplayNameOverrides();
+                UpdateActiveLabel();
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Отменено");
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Ошибка: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Согласование",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
         }
 
         private async Task SaveActiveAsync()
@@ -1862,6 +1990,8 @@ namespace AcadDwgBrowser.Plugin.Ui
                 return;
             if (_saveButton == null || _saveButton.IsDisposed)
                 return;
+            if (_approveButton == null || _approveButton.IsDisposed)
+                return;
 
             var loggedIn = !_busy && PluginApp.Session != null && PluginApp.Session.IsAuthenticated;
             var hasDoc = AcadDocumentService.HasActiveDocument();
@@ -1882,9 +2012,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                     ? "Из каталога: " + displayName + " [" + (file.Status ?? "—") + "]"
                     : "Просмотр: " + displayName + " [" + (file.Status ?? "—") + "] — изменения недоступны";
                 SetNameBoxText(displayName);
-                SetNameBoxEnabled(!_busy && editable);
+                // Имя меняется только через «Задать имя…» (draft / rejected).
+                SetNameBoxEditable(false);
                 _renameButton.Enabled = loggedIn && editable;
                 _saveButton.Enabled = loggedIn && editable;
+                _approveButton.Enabled = loggedIn && IsDraftStatus(file.Status);
                 _saveButton.Text = "Сохранить изменения";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy && editable);
@@ -1904,9 +2036,10 @@ namespace AcadDwgBrowser.Plugin.Ui
 
                 _activeLabel.Text = "Выбрано в каталоге: " + displayName + " [" + (selected.Status ?? "—") + "]";
                 SetNameBoxText(displayName);
-                SetNameBoxEnabled(!_busy && loggedIn);
+                SetNameBoxEditable(false);
                 _renameButton.Enabled = loggedIn;
                 _saveButton.Enabled = loggedIn;
+                _approveButton.Enabled = loggedIn && IsDraftStatus(selected.Status);
                 _saveButton.Text = "Сохранить изменения";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy);
@@ -1929,9 +2062,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                         SetNameBoxText(AcadDocumentService.TryGetActiveDocumentTitle() ?? string.Empty);
                 }
 
-                SetNameBoxEnabled(!_busy && loggedIn);
+                SetNameBoxEditable(false);
                 _renameButton.Enabled = loggedIn;
                 _saveButton.Enabled = loggedIn;
+                _approveButton.Enabled = false;
                 _saveButton.Text = "Сохранить в каталог";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy);
@@ -1942,9 +2076,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                     _editorGroup.Text = "1. Активный чертёж AutoCAD";
                 _activeLabel.Text = "Нет активного чертежа — откройте файл в AutoCAD или из каталога";
                 SetNameBoxText(string.Empty);
-                SetNameBoxEnabled(false);
+                SetNameBoxEditable(false);
                 _renameButton.Enabled = false;
                 _saveButton.Enabled = false;
+                _approveButton.Enabled = false;
                 _saveButton.Text = "Сохранить";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(false);
@@ -2009,12 +2144,17 @@ namespace AcadDwgBrowser.Plugin.Ui
             _nameBox.Text = text ?? string.Empty;
         }
 
-        private void SetNameBoxEnabled(bool enabled)
+        /// <summary>
+        /// Имя в поле только для отображения. Меняется через «Задать имя…»
+        /// (доступно для draft/rejected и для нового чертежа).
+        /// </summary>
+        private void SetNameBoxEditable(bool editable)
         {
             if (_nameBox == null || _nameBox.IsDisposed)
                 return;
-            _nameBox.Enabled = enabled;
-            _nameBox.ReadOnly = !enabled;
+            _nameBox.ReadOnly = !editable;
+            _nameBox.Enabled = true;
+            _nameBox.BackColor = editable ? SystemColors.Window : SystemColors.Control;
         }
 
         private void SetLabelCombosEnabled(bool enabled)
@@ -2057,7 +2197,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 if (!string.IsNullOrEmpty(query))
                 {
-                    var hay = (file.Name + " " + file.ContentType + " " + file.Status + " " + file.Project + " " + file.Id);
+                    var hay = (file.Name + " " + file.ContentType + " " + file.Status + " "
+                               + file.Project + " " + file.RejectionComment + " " + file.Id);
                     if (hay.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0)
                         continue;
                 }
@@ -2065,6 +2206,8 @@ namespace AcadDwgBrowser.Plugin.Ui
                 var item = new ListViewItem(file.Name);
                 item.SubItems.Add(file.Status ?? string.Empty);
                 item.SubItems.Add(file.Project ?? string.Empty);
+                item.SubItems.Add(
+                    IsRejectedStatus(file.Status) ? (file.RejectionComment ?? string.Empty) : string.Empty);
                 item.SubItems.Add(file.UpdatedAt?.ToLocalTime().ToString("g") ?? string.Empty);
                 item.Tag = file;
                 _list.Items.Add(item);
@@ -2074,6 +2217,26 @@ namespace AcadDwgBrowser.Plugin.Ui
             UpdateCatalogActionButtons();
             // Filter rebuild clears selection — restore name/labels from the active drawing.
             UpdateActiveLabel();
+        }
+
+        private void RefreshListItemComment(DwgFileInfo file)
+        {
+            if (_list == null || _list.IsDisposed || file == null)
+                return;
+
+            foreach (ListViewItem item in _list.Items)
+            {
+                if (item.Tag is DwgFileInfo tagged
+                    && string.Equals(tagged.Id, file.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    while (item.SubItems.Count < 5)
+                        item.SubItems.Add(string.Empty);
+                    item.SubItems[3].Text = IsRejectedStatus(file.Status)
+                        ? (file.RejectionComment ?? string.Empty)
+                        : string.Empty;
+                    break;
+                }
+            }
         }
 
         private void BindFilters(IReadOnlyList<FilterEntity> filters)
@@ -2168,9 +2331,14 @@ namespace AcadDwgBrowser.Plugin.Ui
                 return;
             if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
                 return;
-            if (file.Labels != null && file.Labels.HasAnyValue)
+
+            var needLabels = file.Labels == null || !file.Labels.HasAnyValue;
+            var needRejection = IsRejectedStatus(file.Status)
+                                && string.IsNullOrWhiteSpace(file.RejectionComment);
+            if (!needLabels && !needRejection)
             {
-                ApplyLabelsToUi(file.Labels);
+                if (file.Labels != null)
+                    ApplyLabelsToUi(file.Labels);
                 return;
             }
 
@@ -2182,22 +2350,48 @@ namespace AcadDwgBrowser.Plugin.Ui
 
             try
             {
-                ProductionDrawingLabels? labels;
+                ProductionDrawingLabels? labels = file.Labels;
+                string? rejectionComment = null;
                 using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                 {
-                    labels = await client.GetContentLabelsAsync(file.Id, token).ConfigureAwait(true);
+                    if (needLabels && needRejection)
+                    {
+                        var meta = await client.GetContentMetaAsync(file.Id, token).ConfigureAwait(true);
+                        labels = meta.Labels;
+                        rejectionComment = meta.RejectionComment;
+                    }
+                    else if (needLabels)
+                    {
+                        labels = await client.GetContentLabelsAsync(file.Id, token).ConfigureAwait(true);
+                    }
+                    else if (needRejection)
+                    {
+                        rejectionComment = await client.GetRejectionCommentAsync(file.Id, token)
+                            .ConfigureAwait(true);
+                    }
                 }
 
                 if (token.IsCancellationRequested || _labelsRequestId != requestId)
                     return;
 
                 file.Labels = labels ?? new ProductionDrawingLabels();
+                if (!string.IsNullOrWhiteSpace(rejectionComment))
+                    file.RejectionComment = rejectionComment;
+
                 var match = _allFiles.Find(f =>
                     string.Equals(f.Id, file.Id, StringComparison.OrdinalIgnoreCase));
                 if (match != null)
+                {
                     match.Labels = file.Labels.Clone();
+                    if (!string.IsNullOrWhiteSpace(file.RejectionComment))
+                        match.RejectionComment = file.RejectionComment;
+                }
                 if (!string.IsNullOrWhiteSpace(file.LocalPath))
                     OpenDrawingRegistry.Register(file.LocalPath!, file);
+
+                // Refresh list row comment if this rejected item is visible.
+                if (IsRejectedStatus(file.Status) && !string.IsNullOrWhiteSpace(file.RejectionComment))
+                    RefreshListItemComment(file);
 
                 // Apply only if this file is still the editor source.
                 var apply = false;

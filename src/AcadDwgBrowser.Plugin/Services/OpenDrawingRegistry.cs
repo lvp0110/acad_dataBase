@@ -176,6 +176,7 @@ namespace AcadDwgBrowser.Plugin.Services
                 UpdatedAt = src.UpdatedAt,
                 Project = src.Project,
                 Status = src.Status,
+                RejectionComment = src.RejectionComment,
                 ContentType = src.ContentType,
                 GroupId = src.GroupId,
                 LocalPath = src.LocalPath,

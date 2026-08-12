@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace AcadDwgBrowser.Core.Models
@@ -39,11 +40,27 @@ namespace AcadDwgBrowser.Core.Models
         {
             get
             {
-                var name = ((FirstName ?? string.Empty) + " " + (LastName ?? string.Empty)).Trim();
-                if (!string.IsNullOrEmpty(name))
-                    return name;
+                var parts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(LastName)) parts.Add(LastName!.Trim());
+                if (!string.IsNullOrWhiteSpace(FirstName)) parts.Add(FirstName!.Trim());
+                if (!string.IsNullOrWhiteSpace(MiddleName)) parts.Add(MiddleName!.Trim());
+                if (parts.Count > 0)
+                    return string.Join(" ", parts);
                 return Email ?? UserId ?? "пользователь";
             }
         }
+    }
+
+    /// <summary>swagger.UsersListsResponse</summary>
+    public sealed class UsersListsResponse
+    {
+        [JsonPropertyName("code")]
+        public int Code { get; set; }
+
+        [JsonPropertyName("data")]
+        public List<UserFullInfo> Data { get; set; } = new List<UserFullInfo>();
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
     }
 }

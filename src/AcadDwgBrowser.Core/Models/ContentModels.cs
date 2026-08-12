@@ -103,6 +103,9 @@ namespace AcadDwgBrowser.Core.Models
 
         [JsonPropertyName("payload")]
         public System.Text.Json.JsonElement Payload { get; set; }
+
+        [JsonPropertyName("approvals")]
+        public List<ContentApprovalStep>? Approvals { get; set; }
     }
 
     /// <summary>swagger.ContentTypesResponse</summary>

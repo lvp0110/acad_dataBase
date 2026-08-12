@@ -19,6 +19,9 @@ namespace AcadDwgBrowser.Core.Models
 
         public string? Status { get; set; }
 
+        /// <summary>Rejection reason from approvals (when status is rejected).</summary>
+        public string? RejectionComment { get; set; }
+
         public string? ContentType { get; set; }
 
         public string? GroupId { get; set; }
@@ -33,5 +36,12 @@ namespace AcadDwgBrowser.Core.Models
         public ProductionDrawingLabels? Labels { get; set; }
 
         public override string ToString() => Name;
+    }
+
+    public sealed class ContentMetaInfo
+    {
+        public ProductionDrawingLabels? Labels { get; set; }
+
+        public string? RejectionComment { get; set; }
     }
 }

@@ -17,6 +17,16 @@ namespace AcadDwgBrowser.Core.Services
             string contentId,
             CancellationToken cancellationToken = default);
 
+        /// <summary>Reads rejection comment from GET /content/{id} approvals.</summary>
+        Task<string?> GetRejectionCommentAsync(
+            string contentId,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>One GET /content/{id}: labels + rejection comment.</summary>
+        Task<ContentMetaInfo> GetContentMetaAsync(
+            string contentId,
+            CancellationToken cancellationToken = default);
+
         Task<string> DownloadFileAsync(
             DwgFileInfo file,
             string destinationDirectory,
@@ -52,5 +62,16 @@ namespace AcadDwgBrowser.Core.Services
         /// Deletes content via DELETE /content/{id}. API allows draft/rejected only.
         /// </summary>
         Task DeleteContentAsync(string contentId, CancellationToken cancellationToken = default);
+
+        /// <summary>GET /content/toApproval/preview/{id} — steps and available approvers.</summary>
+        Task<IReadOnlyList<ApprovalPreviewStep>> GetApprovalPreviewAsync(
+            string contentId,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>POST /content/toApproval/{id} — start publication approval (draft only).</summary>
+        Task StartApprovalAsync(
+            string contentId,
+            StartApprovalProcessRequest request,
+            CancellationToken cancellationToken = default);
     }
 }

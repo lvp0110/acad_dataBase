@@ -60,11 +60,119 @@ namespace AcadDwgBrowser.Core.Services
                 if (payload.Code >= 400)
                     throw new InvalidOperationException(payload.Error ?? "Ошибка списка контента.");
 
-                return payload.Items
+                var files = payload.Items
                     .Select(MapContent)
                     .Where(f => !string.IsNullOrWhiteSpace(f.Id))
                     .ToList();
+
+                await EnrichRejectionCommentsAsync(files, cancellationToken).ConfigureAwait(false);
+                return files;
             }
+        }
+
+        /// <summary>
+        /// For rejected items, loads GET /content/{id} and fills RejectionComment
+        /// from approvals where action = rejected.
+        /// </summary>
+        private async Task EnrichRejectionCommentsAsync(
+            List<DwgFileInfo> files,
+            CancellationToken cancellationToken)
+        {
+            var rejected = files
+                .Where(f => IsRejectedStatus(f.Status) && string.IsNullOrWhiteSpace(f.RejectionComment))
+                .ToList();
+            if (rejected.Count == 0)
+                return;
+
+            // Sequential: avoids Task.Run + HttpClient edge cases in AutoCAD host.
+            foreach (var file in rejected)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var detail = await GetContentAsync(file.Id, cancellationToken)
+                        .ConfigureAwait(false);
+                    var comment = ExtractRejectionComment(detail.Approvals);
+                    if (!string.IsNullOrWhiteSpace(comment))
+                    {
+                        file.RejectionComment = comment;
+                        AuthDebugLog.Write(
+                            "Rejection comment loaded for " + file.Id + ": " + Truncate(comment));
+                    }
+                    else
+                    {
+                        AuthDebugLog.Write(
+                            "Rejection comment empty for " + file.Id
+                            + " approvals=" + (detail.Approvals?.Count ?? 0));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AuthDebugLog.Write(
+                        "Rejection comment for " + file.Id + ": " + ex.Message);
+                }
+            }
+        }
+
+        private static bool IsRejectedStatus(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status))
+                return false;
+            var s = status.Trim().ToLowerInvariant();
+            return s == "rejected" || s == "отклонен" || s == "отклонён";
+        }
+
+        internal static string? ExtractRejectionComment(IEnumerable<ContentApprovalStep>? approvals)
+        {
+            if (approvals == null)
+                return null;
+
+            string? best = null;
+            DateTimeOffset bestAt = DateTimeOffset.MinValue;
+
+            foreach (var step in approvals)
+            {
+                if (step?.ApprovalUsers == null)
+                    continue;
+
+                foreach (var user in step.ApprovalUsers)
+                {
+                    if (user == null)
+                        continue;
+                    if (!string.Equals(user.Action, "rejected", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var comment = NormalizeRejectionComment(user.Comment);
+                    if (string.IsNullOrWhiteSpace(comment))
+                        continue;
+
+                    // Prefer the latest rejection if several exist.
+                    if (!string.IsNullOrWhiteSpace(user.UpdateActionAt)
+                        && DateTimeOffset.TryParse(
+                            user.UpdateActionAt,
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.AssumeUniversal,
+                            out var at)
+                        && at >= bestAt)
+                    {
+                        bestAt = at;
+                        best = comment;
+                    }
+                    else if (best == null)
+                    {
+                        best = comment;
+                    }
+                }
+            }
+
+            return best;
+        }
+
+        private static string? NormalizeRejectionComment(string? comment)
+        {
+            if (string.IsNullOrWhiteSpace(comment))
+                return null;
+            return comment.Trim().Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
         }
 
         public async Task<IReadOnlyList<string>> GetDwgFieldCodesAsync(CancellationToken cancellationToken = default)
@@ -515,6 +623,145 @@ namespace AcadDwgBrowser.Core.Services
             }
         }
 
+        public async Task<IReadOnlyList<ApprovalPreviewStep>> GetApprovalPreviewAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                throw new ArgumentException("Id контента пуст.", nameof(contentId));
+
+            var endpoint = _settings.BuildApprovalPreviewUrl(contentId);
+            List<ApprovalPreviewStep> steps;
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+            {
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var payload = JsonSerializer.Deserialize<ApprovalPreviewResponse>(json, JsonOptions)
+                              ?? new ApprovalPreviewResponse();
+                if (payload.Code >= 400)
+                    throw new InvalidOperationException(payload.Error ?? "Ошибка списка согласующих.");
+                steps = payload.Data ?? new List<ApprovalPreviewStep>();
+            }
+
+            // Preview often returns only a default signer per step.
+            // Full pick-list = users of the step department from /content/users/all.
+            try
+            {
+                var allUsers = await GetAllUsersAsync(cancellationToken).ConfigureAwait(false);
+                EnrichApprovalStepsWithDepartmentUsers(steps, allUsers);
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("Enrich approval users from /content/users/all: " + ex.Message);
+            }
+
+            AuthDebugLog.Write(
+                "Approval preview " + contentId + ": steps=" + steps.Count + " users=[" +
+                string.Join("; ", steps.Select(s =>
+                    "step" + s.StepOrder + "=" + (s.ApprovalUsers?.Count ?? 0))) + "]");
+
+            return steps;
+        }
+
+        private async Task<IReadOnlyList<UserFullInfo>> GetAllUsersAsync(
+            CancellationToken cancellationToken)
+        {
+            var endpoint = _settings.BuildUsersAllUrl();
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+            {
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var payload = JsonSerializer.Deserialize<UsersListsResponse>(json, JsonOptions)
+                              ?? new UsersListsResponse();
+                if (payload.Code >= 400)
+                    throw new InvalidOperationException(payload.Error ?? "Ошибка списка пользователей.");
+                return payload.Data ?? new List<UserFullInfo>();
+            }
+        }
+
+        private static void EnrichApprovalStepsWithDepartmentUsers(
+            List<ApprovalPreviewStep> steps,
+            IReadOnlyList<UserFullInfo> allUsers)
+        {
+            if (steps == null || steps.Count == 0 || allUsers == null || allUsers.Count == 0)
+                return;
+
+            foreach (var step in steps)
+            {
+                if (step == null || step.DepartmentId <= 0)
+                    continue;
+
+                var byId = new Dictionary<string, ApprovalUser>(StringComparer.OrdinalIgnoreCase);
+                foreach (var existing in step.ApprovalUsers ?? new List<ApprovalUser>())
+                {
+                    if (existing == null || string.IsNullOrWhiteSpace(existing.UserId))
+                        continue;
+                    byId[existing.UserId.Trim()] = existing;
+                }
+
+                foreach (var user in allUsers)
+                {
+                    if (user == null || string.IsNullOrWhiteSpace(user.UserId))
+                        continue;
+                    if (user.DepartmentId != step.DepartmentId)
+                        continue;
+                    if (user.IsActive == false)
+                        continue;
+
+                    var id = user.UserId!.Trim();
+                    if (byId.ContainsKey(id))
+                    {
+                        // Keep preview entry but fill empty name/position from catalog.
+                        var prev = byId[id];
+                        if (string.IsNullOrWhiteSpace(prev.FullName))
+                            prev.FullName = user.DisplayName;
+                        if (string.IsNullOrWhiteSpace(prev.Position))
+                            prev.Position = user.PositionType ?? string.Empty;
+                        continue;
+                    }
+
+                    byId[id] = new ApprovalUser
+                    {
+                        UserId = id,
+                        FullName = user.DisplayName,
+                        Position = user.PositionType ?? string.Empty,
+                        Action = "waiting"
+                    };
+                }
+
+                step.ApprovalUsers = byId.Values
+                    .OrderBy(u => u.FullName ?? u.UserId, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        public async Task StartApprovalAsync(
+            string contentId,
+            StartApprovalProcessRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                throw new ArgumentException("Id контента пуст.", nameof(contentId));
+            if (request == null || request.Steps == null || request.Steps.Count == 0)
+                throw new ArgumentException("Не выбраны шаги согласования.", nameof(request));
+
+            var endpoint = _settings.BuildApprovalStartUrl(contentId);
+            var jsonBody = JsonSerializer.Serialize(request, JsonOptions);
+            AuthDebugLog.Write("POST " + endpoint + " body=" + Truncate(jsonBody));
+
+            using (var content = new StringContent(jsonBody, Encoding.UTF8, "application/json"))
+            using (var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = content })
+            using (var response = await _http.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false))
+            {
+                var status = (int)response.StatusCode;
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                AuthDebugLog.Write("Start approval HTTP " + status + " body=" + Truncate(body));
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException(ExtractErrorMessage(body, status));
+                EnsureApiSuccess(body);
+            }
+        }
+
         public async Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(
             CancellationToken cancellationToken = default)
         {
@@ -555,6 +802,34 @@ namespace AcadDwgBrowser.Core.Services
 
             var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
             return ProductionDrawingLabels.TryFromPayload(detail.Payload);
+        }
+
+        /// <summary>Reads rejection comment from GET /content/{id} approvals.</summary>
+        public async Task<string?> GetRejectionCommentAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                return null;
+
+            var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+            return ExtractRejectionComment(detail.Approvals);
+        }
+
+        /// <summary>One GET /content/{id}: labels + rejection comment.</summary>
+        public async Task<ContentMetaInfo> GetContentMetaAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                return new ContentMetaInfo();
+
+            var detail = await GetContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+            return new ContentMetaInfo
+            {
+                Labels = ProductionDrawingLabels.TryFromPayload(detail.Payload),
+                RejectionComment = ExtractRejectionComment(detail.Approvals)
+            };
         }
 
         private async Task EnrichFilterOptionsAsync(

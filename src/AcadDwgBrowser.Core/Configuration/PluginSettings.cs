@@ -115,6 +115,12 @@ namespace AcadDwgBrowser.Core.Configuration
         /// <summary>GET — swagger /api/v2/globalMenuCategories</summary>
         public string GlobalMenuCategoriesPath { get; set; } = "/api/v2/globalMenuCategories";
 
+        /// <summary>GET — swagger /content/toApproval/preview/{id}</summary>
+        public string ApprovalPreviewPath { get; set; } = "/content/toApproval/preview/{id}";
+
+        /// <summary>POST — swagger /content/toApproval/{id}</summary>
+        public string ApprovalStartPath { get; set; } = "/content/toApproval/{id}";
+
         public string BuildContentFiltersUrl(string? code = null) =>
             (ContentFiltersPath ?? "/content/filters/{code}")
                 .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))
@@ -127,6 +133,22 @@ namespace AcadDwgBrowser.Core.Configuration
 
         public string BuildGlobalMenuCategoriesUrl() =>
             (GlobalMenuCategoriesPath ?? "/api/v2/globalMenuCategories").TrimStart('/');
+
+        public string BuildApprovalPreviewUrl(string contentId) =>
+            (ApprovalPreviewPath ?? "/content/toApproval/preview/{id}")
+                .Replace("{id}", Uri.EscapeDataString(contentId ?? string.Empty))
+                .TrimStart('/');
+
+        public string BuildApprovalStartUrl(string contentId) =>
+            (ApprovalStartPath ?? "/content/toApproval/{id}")
+                .Replace("{id}", Uri.EscapeDataString(contentId ?? string.Empty))
+                .TrimStart('/');
+
+        /// <summary>GET — swagger /content/users/all</summary>
+        public string UsersAllPath { get; set; } = "/content/users/all";
+
+        public string BuildUsersAllUrl() =>
+            (UsersAllPath ?? "/content/users/all").TrimStart('/');
 
         public string BuildContentCreateUrl(string? code = null) =>
             (ContentCreatePath ?? "/content/{code}")
