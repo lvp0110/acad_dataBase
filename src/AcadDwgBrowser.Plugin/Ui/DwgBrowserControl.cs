@@ -51,6 +51,7 @@ namespace AcadDwgBrowser.Plugin.Ui
         private string? _labelsRequestId;
         private bool _busy;
         private bool _sessionChecked;
+        private bool _catalogHadSelection;
         private readonly Autodesk.AutoCAD.ApplicationServices.DocumentCollectionEventHandler _onDocActivated;
 
         public DwgBrowserControl()
@@ -1887,10 +1888,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _saveButton.Text = "Сохранить изменения";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy && editable);
-                if (file.Labels != null && file.Labels.HasAnyValue)
-                    ApplyLabelsToUi(file.Labels);
-                else if (file.Labels == null)
+                if (file.Labels == null)
                     _ = EnsureLabelsLoadedAsync(file);
+                else
+                    ApplyLabelsToUi(file.Labels);
             }
             else if (_list.SelectedItems.Count > 0
                      && _list.SelectedItems[0].Tag is DwgFileInfo selected
@@ -1909,10 +1910,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _saveButton.Text = "Сохранить изменения";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy);
-                if (selected.Labels != null && selected.Labels.HasAnyValue)
-                    ApplyLabelsToUi(selected.Labels);
-                else if (selected.Labels == null)
+                if (selected.Labels == null)
                     _ = EnsureLabelsLoadedAsync(selected);
+                else
+                    ApplyLabelsToUi(selected.Labels);
             }
             else if (hasDoc)
             {
@@ -1924,7 +1925,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     if (!string.IsNullOrWhiteSpace(OpenDrawingRegistry.PendingNewName))
                         SetNameBoxText(OpenDrawingRegistry.PendingNewName);
-                    else if (string.IsNullOrWhiteSpace(_nameBox.Text))
+                    else
                         SetNameBoxText(AcadDocumentService.TryGetActiveDocumentTitle() ?? string.Empty);
                 }
 
@@ -1947,6 +1948,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _saveButton.Text = "Сохранить";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(false);
+                ApplyLabelsToUi(null);
             }
         }
 
@@ -2070,6 +2072,8 @@ namespace AcadDwgBrowser.Plugin.Ui
 
             _list.EndUpdate();
             UpdateCatalogActionButtons();
+            // Filter rebuild clears selection — restore name/labels from the active drawing.
+            UpdateActiveLabel();
         }
 
         private void BindFilters(IReadOnlyList<FilterEntity> filters)
@@ -2096,33 +2100,60 @@ namespace AcadDwgBrowser.Plugin.Ui
                 "prod_drawing_panel_size",
                 "panel_size"), "Размер панели");
 
-            // Keep current construction labels selected after options reload.
-            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _)
-                && current.Labels != null
-                && current.Labels.HasAnyValue)
+            // Keep editor labels aligned with active drawing, or catalog selection if none.
+            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _))
             {
                 ApplyLabelsToUi(current.Labels);
             }
             else if (_list.SelectedItems.Count > 0
-                     && _list.SelectedItems[0].Tag is DwgFileInfo selected
-                     && selected.Labels != null
-                     && selected.Labels.HasAnyValue)
+                     && _list.SelectedItems[0].Tag is DwgFileInfo selected)
             {
                 ApplyLabelsToUi(selected.Labels);
+            }
+            else
+            {
+                ApplyLabelsToUi(null);
             }
         }
 
         private async Task OnCatalogSelectionChangedAsync()
         {
+            // No blue selection → name + labels come from the active AutoCAD drawing.
             if (_list.SelectedItems.Count == 0)
+            {
+                var leftSelection = _catalogHadSelection;
+                _catalogHadSelection = false;
+                UpdateActiveLabel();
+                // After leaving a catalog peek with no linked drawing, drop peeked labels.
+                if (leftSelection
+                    && !OpenDrawingRegistry.TryGetCurrent(out _, out _))
+                {
+                    ApplyLabelsToUi(null);
+                }
+
                 return;
+            }
+
+            _catalogHadSelection = true;
 
             var file = _list.SelectedItems[0].Tag as DwgFileInfo;
             if (file == null || string.IsNullOrWhiteSpace(file.Id))
+            {
+                UpdateActiveLabel();
                 return;
+            }
 
-            // Prefer already loaded labels; otherwise fetch payload codes.
-            if (file.Labels != null && file.Labels.HasAnyValue)
+            // Active catalog drawing stays the editor source; selection is only for Open/Delete.
+            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _)
+                && !string.IsNullOrWhiteSpace(current.Id))
+            {
+                UpdateActiveLabel();
+                return;
+            }
+
+            UpdateActiveLabel();
+
+            if (file.Labels != null)
             {
                 ApplyLabelsToUi(file.Labels);
                 return;
@@ -2168,7 +2199,22 @@ namespace AcadDwgBrowser.Plugin.Ui
                 if (!string.IsNullOrWhiteSpace(file.LocalPath))
                     OpenDrawingRegistry.Register(file.LocalPath!, file);
 
-                if (file.Labels.HasAnyValue)
+                // Apply only if this file is still the editor source.
+                var apply = false;
+                if (OpenDrawingRegistry.TryGetCurrent(out var current, out _)
+                    && string.Equals(current.Id, file.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    apply = true;
+                }
+                else if (!OpenDrawingRegistry.TryGetCurrent(out _, out _)
+                         && _list.SelectedItems.Count > 0
+                         && _list.SelectedItems[0].Tag is DwgFileInfo selected
+                         && string.Equals(selected.Id, file.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    apply = true;
+                }
+
+                if (apply)
                     ApplyLabelsToUi(file.Labels);
             }
             catch (OperationCanceledException)
