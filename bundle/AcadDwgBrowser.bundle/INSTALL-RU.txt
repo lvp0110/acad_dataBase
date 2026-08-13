@@ -1,0 +1,45 @@
+﻿DWG dB (AcadDwgBrowser) — установка на другой ПК
+================================================
+
+Нужно:
+  - Windows
+  - AutoCAD 2024, 2025 или 2026
+  - Visual Studio / .NET SDK НЕ нужны
+
+Установка (первый раз):
+  1. Полностью закройте AutoCAD.
+  2. Распакуйте этот архив в любую папку.
+  3. Запустите Install.bat (двойной клик).
+  4. Дождитесь сообщения INSTALL OK.
+  5. Запустите AutoCAD.
+  6. В командной строке введите: DWGBROWSER
+     (или DWGDB)
+
+Вход:
+  - В палитре укажите логин/пароль ConstrTodo.
+  - Адрес API по умолчанию уже задан в config.json.
+
+Куда ставится плагин:
+  %AppData%\Autodesk\ApplicationPlugins\AcadDwgBrowser.bundle
+
+Автообновления (если настроил администратор):
+  - В config.json задан UpdateManifestUrl на общую папку или сайт.
+  - Новые версии скачиваются сами.
+  - Вам нужен только ПЕРЕЗАПУСК AutoCAD (закрыть и открыть снова).
+  - Install.bat для обновлений больше не обязателен.
+  - Подробно для администратора: ADMIN-UPDATE.txt
+
+Обновление вручную (если автообновление не настроено):
+  1. Закройте AutoCAD.
+  2. Снова запустите Install.bat из нового архива.
+
+Удаление:
+  Удалите папку:
+  %AppData%\Autodesk\ApplicationPlugins\AcadDwgBrowser.bundle
+
+Если команда DWGBROWSER неизвестна:
+  - Install.bat завершился с INSTALL OK?
+  - AutoCAD полностью перезапущен?
+  - AutoCAD 2024 → Contents\2024\AcadDwgBrowser.dll
+  - AutoCAD 2025/2026 → Contents\2025\AcadDwgBrowser.dll
+  - Смотрите install-log.txt рядом с Install.bat

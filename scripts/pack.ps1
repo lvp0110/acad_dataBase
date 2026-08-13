@@ -16,7 +16,7 @@ $bundleName = "AcadDwgBrowser.bundle"
 $bundlePath = Join-Path $root "bundle\$bundleName"
 $packageXml = Join-Path $bundlePath "PackageContents.xml"
 $distAssets = Join-Path $PSScriptRoot "dist-assets"
-$assetFiles = @("Install.bat", "Install.ps1", "README-INSTALL.txt")
+$assetFiles = @("Install.bat", "Install.ps1", "README-INSTALL.txt", "INSTALL-RU.txt", "ADMIN-UPDATE.txt")
 
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build.ps1") -Configuration $Configuration

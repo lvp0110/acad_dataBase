@@ -64,6 +64,13 @@ namespace AcadDwgBrowser.Core.Configuration
 
         public string DefaultProdDrawingPerforationCode { get; set; } = "block_2";
 
+        /// <summary>
+        /// Auto-update feed: HTTP(S) or UNC/local path to manifest.json.
+        /// Empty = updates disabled. Example:
+        /// \\server\cad\AcadDwgBrowser\manifest.json
+        /// </summary>
+        public string UpdateManifestUrl { get; set; } = string.Empty;
+
         public string ResolveDownloadDirectory()
         {
             if (!string.IsNullOrWhiteSpace(DownloadDirectory))

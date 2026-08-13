@@ -1,0 +1,60 @@
+Автообновление DWG dB — для администратора
+==========================================
+
+Как это работает
+----------------
+1. Вы публикуете новый ZIP + manifest.json в общую папку (или на HTTP).
+2. У пользователей в config.json указан UpdateManifestUrl.
+3. При запуске AutoCAD плагин сам проверяет manifest.
+4. Если версия новее — скачивает пакет в фоне.
+5. После ЗАКРЫТИЯ AutoCAD файлы обновляются автоматически.
+6. Пользователю нужен только ПЕРЕЗАПУСК AutoCAD.
+
+Первичная установка (один раз на ПК)
+------------------------------------
+Как раньше: Install.bat из ZIP (или Setup.bat из исходников).
+
+В config.json после установки задайте канал обновлений, например:
+
+  "UpdateManifestUrl": "\\\\SERVER\\cad\\AcadDwgBrowser\\manifest.json"
+
+Файл:
+  %AppData%\Autodesk\ApplicationPlugins\AcadDwgBrowser.bundle\Contents\config.json
+
+Публикация обновления (на вашем ПК)
+-----------------------------------
+1. Поднимите версию в:
+   bundle\AcadDwgBrowser.bundle\PackageContents.xml
+   (атрибут AppVersion, например 1.0.1)
+
+2. Соберите и выложите в шару:
+
+   powershell -ExecutionPolicy Bypass -File .\scripts\publish-update.ps1 `
+     -SharePath "\\SERVER\cad\AcadDwgBrowser" `
+     -Version 1.0.1
+
+   Скрипт положит:
+     \\SERVER\cad\AcadDwgBrowser\AcadDwgBrowser-1.0.1.zip
+     \\SERVER\cad\AcadDwgBrowser\manifest.json
+
+3. Готово. Пользователям напишите: «Перезапустите AutoCAD».
+
+manifest.json (пример)
+----------------------
+{
+  "version": "1.0.1",
+  "packageUrl": "\\\\SERVER\\cad\\AcadDwgBrowser\\AcadDwgBrowser-1.0.1.zip",
+  "notes": "Исправление имён и меток"
+}
+
+Вместо packageUrl можно указать готовую папку:
+  "bundlePath": "\\\\SERVER\\cad\\AcadDwgBrowser\\AcadDwgBrowser.bundle"
+
+Отключение
+----------
+Оставьте UpdateManifestUrl пустым "" — автообновление выключено.
+
+Логи
+----
+  %LocalAppData%\AcadDwgBrowser\login-debug.log
+  %LocalAppData%\AcadDwgBrowser\update-apply.log

@@ -49,6 +49,16 @@ namespace AcadDwgBrowser.Plugin
             {
                 System.Diagnostics.Debug.WriteLine("AcadDwgBrowser ribbon idle hook failed: " + ex);
             }
+
+            // Auto-update: download in background; apply after AutoCAD exits (user restarts).
+            try
+            {
+                PluginUpdater.StartBackgroundCheck(Settings, PluginDirectory);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("AcadDwgBrowser update check failed: " + ex);
+            }
         }
 
         private static void OnApplicationIdle(object? sender, System.EventArgs e)
@@ -61,6 +71,44 @@ namespace AcadDwgBrowser.Plugin
             catch (System.Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("AcadDwgBrowser ribbon failed: " + ex);
+            }
+
+            try
+            {
+                Autodesk.AutoCAD.ApplicationServices.Application.Idle += OnUpdateNotifyIdle;
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static int _updateNotifyTicks;
+
+        private static void OnUpdateNotifyIdle(object? sender, System.EventArgs e)
+        {
+            _updateNotifyTicks++;
+            if (_updateNotifyTicks < 5)
+                return;
+
+            Autodesk.AutoCAD.ApplicationServices.Application.Idle -= OnUpdateNotifyIdle;
+            try
+            {
+                var flag = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "AcadDwgBrowser",
+                    "update-pending.txt");
+                if (!File.Exists(flag))
+                    return;
+                var msg = File.ReadAllText(flag).Trim();
+                if (string.IsNullOrWhiteSpace(msg))
+                    msg = "Доступно обновление DWG dB. Перезапустите AutoCAD.";
+                Services.AcadDocumentService.WriteMessage(msg);
+                try { File.Delete(flag); } catch { /* ignore */ }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("AcadDwgBrowser update notify failed: " + ex);
             }
         }
 
