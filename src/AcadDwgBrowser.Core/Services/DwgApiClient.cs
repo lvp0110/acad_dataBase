@@ -344,7 +344,12 @@ namespace AcadDwgBrowser.Core.Services
                 ? newName!.Trim()
                 : ResolveStableContentName(detail, knownDisplayName, contentId);
 
-            // --- DWG replace: create new + delete old (PUT+file is broken on server) ---
+            var fieldCode = await ResolveDwgFieldCodeAsync(detail, dwgFieldCode, cancellationToken)
+                .ConfigureAwait(false);
+
+            // --- DWG replace ---
+            // Never publish tmp-* codes: web (constr-todo) reads the same API and shows them.
+            // Prefer in-place PUT (same id + code). Fallback: delete old, create with the real name.
             if (hasFile)
             {
                 if (resolvedLabels == null || !resolvedLabels.IsComplete)
@@ -352,57 +357,77 @@ namespace AcadDwgBrowser.Core.Services
                         "Для сохранения DWG нужны все метки: "
                         + (resolvedLabels?.MissingFieldName() ?? "метки"));
 
-                // Temporary unique code must NOT become the visible title.
-                var tempCode = BuildUniqueTempCode();
-                AuthDebugLog.Write(
-                    "Replace content via create+delete oldId=" + contentId
-                    + " name=" + name + " tempCode=" + tempCode);
+                try
+                {
+                    await PutContentWithFileAsync(
+                            contentId,
+                            name,
+                            localDwgPath!,
+                            resolvedLabels,
+                            fieldCode,
+                            detail,
+                            cancellationToken,
+                            progress)
+                        .ConfigureAwait(false);
 
-                var created = await CreateContentAsync(
-                        tempCode,
-                        localDwgPath!,
-                        resolvedLabels,
-                        dwgFieldCode,
-                        progress,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                    AuthDebugLog.Write(
+                        "Replace DWG in-place ok id=" + contentId + " code=" + name);
+                    progress?.Report(1.0);
+                    return new DwgFileInfo
+                    {
+                        Id = contentId,
+                        Name = name,
+                        Status = detail.Status ?? "draft",
+                        ContentType = detail.ContentType,
+                        LocalPath = localDwgPath,
+                        DwgFieldCode = fieldCode,
+                        Labels = resolvedLabels.Clone()
+                    };
+                }
+                catch (Exception putEx)
+                {
+                    AuthDebugLog.Write(
+                        "In-place DWG PUT failed, fallback delete+create: " + putEx.Message);
+                }
+
+                AuthDebugLog.Write(
+                    "Replace content via delete+create oldId=" + contentId + " code=" + name);
+
+                // Delete first so create can reuse the same human-readable code (no tmp-).
+                await DeleteContentAsync(contentId, cancellationToken).ConfigureAwait(false);
+
+                DwgFileInfo created;
+                try
+                {
+                    created = await CreateContentAsync(
+                            name,
+                            localDwgPath!,
+                            resolvedLabels,
+                            fieldCode,
+                            progress,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception createEx)
+                {
+                    throw new InvalidOperationException(
+                        "Не удалось сохранить DWG после удаления старой версии. "
+                        + "Локальный файл на месте, но запись в каталоге могла пропасть. "
+                        + "Создайте черновик заново («Сохранить в каталог»). "
+                        + createEx.Message,
+                        createEx);
+                }
 
                 if (string.IsNullOrWhiteSpace(created.Id))
                 {
-                    created.Id = await ResolveNewestContentIdByNameAsync(tempCode, cancellationToken)
+                    created.Id = await ResolveNewestContentIdByNameAsync(name, cancellationToken)
                         .ConfigureAwait(false) ?? string.Empty;
                 }
 
                 if (string.IsNullOrWhiteSpace(created.Id))
                 {
                     throw new InvalidOperationException(
-                        "Новая версия чертежа создана, но сервер не вернул Id. "
-                        + "Старый черновик не удалён — обновите список и проверьте дубликаты.");
-                }
-
-                try
-                {
-                    await DeleteContentAsync(contentId, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    AuthDebugLog.Write("Delete old content after replace failed: " + ex.Message);
-                }
-
-                // Always restore the original display name (PUT without file).
-                try
-                {
-                    await PutContentMetaAsync(
-                            created.Id,
-                            name,
-                            resolvedLabels,
-                            created.DwgFieldCode ?? dwgFieldCode,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    AuthDebugLog.Write("Rename after replace failed: " + ex.Message);
+                        "Новая версия создана, но сервер не вернул Id. Обновите список каталога.");
                 }
 
                 created.Name = name;
@@ -414,8 +439,6 @@ namespace AcadDwgBrowser.Core.Services
             }
 
             // --- Labels / rename only: PUT without file (works) ---
-            var fieldCode = await ResolveDwgFieldCodeAsync(detail, dwgFieldCode, cancellationToken)
-                .ConfigureAwait(false);
             await PutContentMetaAsync(
                     contentId,
                     name,
@@ -507,8 +530,82 @@ namespace AcadDwgBrowser.Core.Services
             progress?.Report(1.0);
         }
 
-        private static string BuildUniqueTempCode() =>
-            "tmp-" + Guid.NewGuid().ToString("N");
+        /// <summary>
+        /// In-place DWG replace via PUT multipart (same content id, same code/name).
+        /// Matches the web client flow — no temporary tmp-* codes.
+        /// </summary>
+        private async Task PutContentWithFileAsync(
+            string contentId,
+            string name,
+            string localDwgPath,
+            ProductionDrawingLabels labels,
+            string dwgFieldCode,
+            ContentFullInfo detail,
+            CancellationToken cancellationToken,
+            IProgress<double>? progress = null)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Имя чертежа пусто.", nameof(name));
+            if (string.IsNullOrWhiteSpace(localDwgPath) || !File.Exists(localDwgPath))
+                throw new FileNotFoundException("Локальный DWG не найден.", localDwgPath);
+
+            name = name.Trim();
+            var fieldCode = string.IsNullOrWhiteSpace(dwgFieldCode) ? "file_dwg" : dwgFieldCode.Trim();
+            var payloadJson = BuildUpdatePayloadJson(
+                detail, name, stripFileFields: true, fieldCode, labels);
+
+            var fileName = MakeSafeDwgFileName(name, contentId);
+            var bytes = await ReadFileSharedAsync(localDwgPath, cancellationToken).ConfigureAwait(false);
+            progress?.Report(0.25);
+
+            var endpoint = _settings.BuildContentDetailUrl(contentId);
+            using (var form = new MultipartFormDataContent())
+            {
+                void AddField(string key, string value) =>
+                    form.Add(new StringContent(value ?? string.Empty, Encoding.UTF8), key);
+
+                AddField("code", name);
+                AddField("name", name);
+                if (!string.IsNullOrWhiteSpace(labels.UserUuid))
+                    AddField("user_uuid", labels.UserUuid);
+                if (!string.IsNullOrWhiteSpace(labels.BrandCode))
+                    AddField("brand_code", labels.BrandCode);
+                if (!string.IsNullOrWhiteSpace(labels.ModelCode))
+                    AddField("model_code", labels.ModelCode);
+                if (!string.IsNullOrWhiteSpace(labels.GlobalCategoryCode))
+                    AddField("global_category_code", labels.GlobalCategoryCode);
+                if (!string.IsNullOrWhiteSpace(labels.EdgeCode))
+                    AddField("prod_drawing_edge_code", labels.EdgeCode);
+                if (!string.IsNullOrWhiteSpace(labels.PanelSizeCode))
+                    AddField("prod_drawing_panel_size_code", labels.PanelSizeCode);
+                if (!string.IsNullOrWhiteSpace(labels.PerforationCode))
+                    AddField("prod_drawing_perforation_code", labels.PerforationCode);
+
+                form.Add(new StringContent(payloadJson, Encoding.UTF8), "payload");
+
+                var fileContent = new ByteArrayContent(bytes);
+                fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                form.Add(fileContent, fieldCode, fileName);
+
+                AuthDebugLog.Write(
+                    "PUT " + endpoint + " with file code=" + name + " field=" + fieldCode
+                    + " payload=" + Truncate(payloadJson));
+
+                progress?.Report(0.45);
+                using (var request = new HttpRequestMessage(HttpMethod.Put, endpoint) { Content = form })
+                using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
+                {
+                    var status = (int)response.StatusCode;
+                    var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    AuthDebugLog.Write("Update content+file HTTP " + status + " body=" + Truncate(body));
+                    if (!response.IsSuccessStatusCode)
+                        throw new InvalidOperationException(ExtractErrorMessage(body, status));
+                    EnsureApiSuccess(body);
+                }
+            }
+
+            progress?.Report(0.9);
+        }
 
         /// <summary>
         /// Picks a stable user-facing title. Temporary replace codes (tmp-… / "name #abc123")
@@ -1095,11 +1192,9 @@ namespace AcadDwgBrowser.Core.Services
             var endpoint = _settings.BuildContentCreateUrl();
             progress?.Report(0.05);
 
-            var fileName = Path.GetFileName(localDwgPath);
+            var fileName = MakeSafeDwgFileName(name, null);
             if (string.IsNullOrWhiteSpace(fileName))
-                fileName = name + ".dwg";
-            if (!fileName.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase))
-                fileName += ".dwg";
+                fileName = "drawing.dwg";
 
             var bytes = await ReadFileSharedAsync(localDwgPath, cancellationToken).ConfigureAwait(false);
             progress?.Report(0.35);
@@ -1111,6 +1206,7 @@ namespace AcadDwgBrowser.Core.Services
                     form.Add(new StringContent(value ?? string.Empty, Encoding.UTF8), key);
 
                 AddField("code", name);
+                AddField("name", name);
                 AddField("user_uuid", labels.UserUuid);
                 AddField("brand_code", labels.BrandCode);
                 AddField("model_code", labels.ModelCode);
