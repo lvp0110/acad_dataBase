@@ -10,7 +10,39 @@ namespace AcadDwgBrowser.Core.Services
     {
         Task<IReadOnlyList<DwgFileInfo>> ListFilesAsync(CancellationToken cancellationToken = default);
 
+        /// <summary>
+        /// GET /content/list/{type} with optional filter query params (web ContentFilters).
+        /// Returns files and the filter option sets from the same response.
+        /// </summary>
+        Task<ContentCatalogPage> ListCatalogAsync(
+            IReadOnlyDictionary<string, string>? filters = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Label dropdown options via POST /content/types/form + GET /content/references
+        /// (same cascade path as constr-todo-web DynamicForm).
+        /// </summary>
+        Task<IReadOnlyList<FilterEntity>> GetLabelOptionsAsync(
+            IReadOnlyDictionary<string, string>? listValues = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>Alias of GetLabelOptionsAsync for older call sites.</summary>
         Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>POST /content/production-drawings/sizes</summary>
+        Task CreatePanelSizeAsync(
+            PanelSizeCreateRequest request,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>POST /content/production-drawings/perforations</summary>
+        Task CreatePerforationAsync(
+            BrandEntityCreateRequest request,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>POST /content/production-drawings/edges</summary>
+        Task CreateEdgeAsync(
+            BrandEntityCreateRequest request,
+            CancellationToken cancellationToken = default);
 
         /// <summary>Reads label field codes from GET /content/{id} payload.</summary>
         Task<ProductionDrawingLabels?> GetContentLabelsAsync(

@@ -24,6 +24,73 @@ namespace AcadDwgBrowser.Core.Models
     {
         [JsonPropertyName("content")]
         public List<ContentInfo> Content { get; set; } = new List<ContentInfo>();
+
+        /// <summary>Filter chips for the list — same payload as web ContentFilters.</summary>
+        [JsonPropertyName("filters")]
+        public List<FilterEntity> Filters { get; set; } = new List<FilterEntity>();
+    }
+
+    /// <summary>Catalog page: files + server filter definitions from GET /content/list.</summary>
+    public sealed class ContentCatalogPage
+    {
+        public List<DwgFileInfo> Files { get; set; } = new List<DwgFileInfo>();
+        public List<FilterEntity> Filters { get; set; } = new List<FilterEntity>();
+    }
+
+    /// <summary>
+    /// Live POST /content/types/form/{code} body shape used by constr-todo-web
+    /// (swagger still documents the older GET DocFieldsResponse array).
+    /// </summary>
+    public sealed class ContentFormResponse
+    {
+        [JsonPropertyName("code")]
+        public int Code { get; set; }
+
+        [JsonPropertyName("data")]
+        public ContentFormData? Data { get; set; }
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
+    }
+
+    public sealed class ContentFormData
+    {
+        [JsonPropertyName("fields")]
+        public List<ContentFormField> Fields { get; set; } = new List<ContentFormField>();
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+    }
+
+    public sealed class ContentFormField
+    {
+        [JsonPropertyName("code")]
+        public string Code { get; set; } = string.Empty;
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+
+        [JsonPropertyName("source")]
+        public string? Source { get; set; }
+
+        [JsonPropertyName("query")]
+        public string? Query { get; set; }
+
+        [JsonPropertyName("required")]
+        public bool Required { get; set; }
+
+        [JsonPropertyName("disabled")]
+        public bool Disabled { get; set; }
+
+        public bool IsListField =>
+            string.Equals(Type, "list", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Type, "multiple_list", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>models.ContentInfo</summary>

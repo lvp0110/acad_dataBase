@@ -203,4 +203,45 @@ namespace AcadDwgBrowser.Core.Models
             return labels.HasAnyValue ? labels : null;
         }
     }
+
+    /// <summary>POST /content/production-drawings/sizes — same as web PanelSizeCreate.</summary>
+    public sealed class PanelSizeCreateRequest
+    {
+        [JsonPropertyName("len_x")]
+        public double LenX { get; set; }
+
+        [JsonPropertyName("len_z")]
+        public double LenZ { get; set; }
+
+        [JsonPropertyName("len_y")]
+        public double LenY { get; set; }
+
+        /// <summary>Backend code: len_x_len_z_len_y with '.' → '_' in len_y.</summary>
+        public string BuildCode()
+        {
+            var y = LenY.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                .Replace('.', '_');
+            return LenX.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "_"
+                + LenZ.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "_"
+                + y;
+        }
+    }
+
+    /// <summary>POST perforations/edges — same as web BrandEntityCreate.</summary>
+    public sealed class BrandEntityCreateRequest
+    {
+        [JsonPropertyName("code")]
+        public string Code { get; set; } = string.Empty;
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
+
+        [JsonPropertyName("brand_code")]
+        public string BrandCode { get; set; } = string.Empty;
+    }
 }

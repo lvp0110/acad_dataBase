@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace AcadDwgBrowser.Core.Configuration
 {
@@ -85,15 +86,32 @@ namespace AcadDwgBrowser.Core.Configuration
         public string ResolveContentType() =>
             string.IsNullOrWhiteSpace(ContentType) ? "production_drawings" : ContentType.Trim();
 
-        public string BuildContentListUrl()
+        public string BuildContentListUrl(
+            IReadOnlyDictionary<string, string>? filters = null)
         {
             var type = ResolveContentType();
             var path = (ContentListPath ?? "/content/list/{type}").Replace("{type}", Uri.EscapeDataString(type));
+            var query = new List<string>();
             if (!string.IsNullOrWhiteSpace(ContentCategory))
+                query.Add("category=" + Uri.EscapeDataString(ContentCategory.Trim()));
+
+            // Same contract as web / swagger: filter field codes as query params
+            // (multi-values comma-separated, e.g. status=approved,rejected).
+            if (filters != null)
             {
-                var sep = path.Contains("?") ? "&" : "?";
-                path += sep + "category=" + Uri.EscapeDataString(ContentCategory.Trim());
+                foreach (var pair in filters)
+                {
+                    if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                        continue;
+                    query.Add(
+                        Uri.EscapeDataString(pair.Key.Trim())
+                        + "="
+                        + Uri.EscapeDataString(pair.Value.Trim()));
+                }
             }
+
+            if (query.Count > 0)
+                path += (path.Contains("?") ? "&" : "?") + string.Join("&", query);
 
             return path.TrimStart('/');
         }
@@ -137,13 +155,31 @@ namespace AcadDwgBrowser.Core.Configuration
                 .TrimStart('/');
 
         /// <summary>
-        /// Full reference list. Default API limit is 20 — always request a high limit.
+        /// Reference options — matches web contentReferences(source, filter, limit, offset, query).
+        /// Default API page size is small; ComboBox needs a high limit when filter is empty.
+        /// Optional <paramref name="query"/> is the cascade fragment from form field.query
+        /// (e.g. brand_code=bon), appended like the web client does.
         /// </summary>
-        public string BuildContentReferencesUrl(string referenceCode, int limit = 500) =>
-            (ContentReferencesPath ?? "/content/references/{code}")
+        public string BuildContentReferencesUrl(
+            string referenceCode,
+            int limit = 500,
+            int offset = 0,
+            string? filter = null,
+            string? query = null)
+        {
+            var path = (ContentReferencesPath ?? "/content/references/{code}")
                 .Replace("{code}", Uri.EscapeDataString(referenceCode ?? string.Empty))
-                .TrimStart('/')
-            + "?limit=" + Math.Max(1, limit) + "&offset=0";
+                .TrimStart('/');
+
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(query))
+                parts.Add(query.Trim().TrimStart('?'));
+
+            parts.Add("filter=" + Uri.EscapeDataString(filter ?? string.Empty));
+            parts.Add("limit=" + Math.Max(1, limit));
+            parts.Add("offset=" + Math.Max(0, offset));
+            return path + "?" + string.Join("&", parts);
+        }
 
         public string BuildEntitiesUrl(string entityType) =>
             (EntitiesPath ?? "/api/v2/entities/{type}")
@@ -166,8 +202,26 @@ namespace AcadDwgBrowser.Core.Configuration
         /// <summary>GET — swagger /content/users/all</summary>
         public string UsersAllPath { get; set; } = "/content/users/all";
 
+        /// <summary>POST — web createPanelSizeApi</summary>
+        public string PanelSizeCreatePath { get; set; } = "/content/production-drawings/sizes";
+
+        /// <summary>POST — web createPerforationApi</summary>
+        public string PerforationCreatePath { get; set; } = "/content/production-drawings/perforations";
+
+        /// <summary>POST — web createEdgeApi</summary>
+        public string EdgeCreatePath { get; set; } = "/content/production-drawings/edges";
+
         public string BuildUsersAllUrl() =>
             (UsersAllPath ?? "/content/users/all").TrimStart('/');
+
+        public string BuildPanelSizeCreateUrl() =>
+            (PanelSizeCreatePath ?? "/content/production-drawings/sizes").TrimStart('/');
+
+        public string BuildPerforationCreateUrl() =>
+            (PerforationCreatePath ?? "/content/production-drawings/perforations").TrimStart('/');
+
+        public string BuildEdgeCreateUrl() =>
+            (EdgeCreatePath ?? "/content/production-drawings/edges").TrimStart('/');
 
         public string BuildContentCreateUrl(string? code = null) =>
             (ContentCreatePath ?? "/content/{code}")

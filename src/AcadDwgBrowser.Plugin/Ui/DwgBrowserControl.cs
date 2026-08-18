@@ -30,6 +30,7 @@ namespace AcadDwgBrowser.Plugin.Ui
         private Button _saveButton = null!;
         private Button _approveButton = null!;
         private TextBox _filterBox = null!;
+        private FlowLayoutPanel _catalogFiltersPanel = null!;
         private TextBox _nameBox = null!;
         private GroupBox _editorGroup = null!;
         private GroupBox _catalogGroup = null!;
@@ -42,17 +43,26 @@ namespace AcadDwgBrowser.Plugin.Ui
         private ComboBox _perforationCombo = null!;
         private ComboBox _edgeCombo = null!;
         private ComboBox _sizeCombo = null!;
+        private Button _addPerforationButton = null!;
+        private Button _addEdgeButton = null!;
+        private Button _addSizeButton = null!;
         private ProgressBar _progress = null!;
         private List<DwgFileInfo> _allFiles = new List<DwgFileInfo>();
         private List<FilterEntity> _filters = new List<FilterEntity>();
+        private List<FilterEntity> _catalogFilters = new List<FilterEntity>();
+        private readonly Dictionary<string, string> _catalogFilterValues =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _displayNameById =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource? _cts;
         private CancellationTokenSource? _labelsCts;
+        private CancellationTokenSource? _labelCascadeCts;
         private string? _labelsRequestId;
         private bool _busy;
         private bool _sessionChecked;
         private bool _catalogHadSelection;
+        private bool _suppressLabelCascade;
+        private bool _suppressCatalogFilterEvents;
         private readonly Autodesk.AutoCAD.ApplicationServices.DocumentCollectionEventHandler _onDocActivated;
 
         public DwgBrowserControl()
@@ -306,12 +316,13 @@ namespace AcadDwgBrowser.Plugin.Ui
             var labelsPanel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 3,
                 RowCount = 7,
                 Padding = new Padding(0)
             };
-            labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            labelsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
             for (var i = 0; i < 7; i++)
                 labelsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
@@ -330,9 +341,20 @@ namespace AcadDwgBrowser.Plugin.Ui
             _categoryCombo = AddLabelCombo(labelsPanel, 1, "Категория *");
             _brandCombo = AddLabelCombo(labelsPanel, 2, "Бренд *");
             _modelCombo = AddLabelCombo(labelsPanel, 3, "Модель *");
-            _perforationCombo = AddLabelCombo(labelsPanel, 4, "Перфорация *");
-            _edgeCombo = AddLabelCombo(labelsPanel, 5, "Кромка *");
-            _sizeCombo = AddLabelCombo(labelsPanel, 6, "Размер панели *");
+            _perforationCombo = AddLabelCombo(labelsPanel, 4, "Перфорация *", out _addPerforationButton);
+            _edgeCombo = AddLabelCombo(labelsPanel, 5, "Кромка *", out _addEdgeButton);
+            _sizeCombo = AddLabelCombo(labelsPanel, 6, "Размер панели *", out _addSizeButton);
+            _addPerforationButton.Click += async (_, __) => await CreatePerforationAsync().ConfigureAwait(true);
+            _addEdgeButton.Click += async (_, __) => await CreateEdgeAsync().ConfigureAwait(true);
+            _addSizeButton.Click += async (_, __) => await CreatePanelSizeAsync().ConfigureAwait(true);
+            WireLabelCascade(_userCombo);
+            WireLabelCascade(_categoryCombo);
+            WireLabelCascade(_brandCombo);
+            WireLabelCascade(_modelCombo);
+            WireLabelCascade(_perforationCombo);
+            WireLabelCascade(_edgeCombo);
+            WireLabelCascade(_sizeCombo);
+            _brandCombo.SelectedIndexChanged += (_, __) => UpdateReferenceCreateButtons();
 
             var actions = new TableLayoutPanel
             {
@@ -393,10 +415,11 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 4,
                 Padding = new Padding(0, 4, 0, 0)
             };
             catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
             catalogLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
             _catalogGroup.Controls.Add(catalogLayout);
@@ -449,6 +472,16 @@ namespace AcadDwgBrowser.Plugin.Ui
             _deleteButton.Click += async (_, __) => await DeleteSelectedAsync();
             toolbar.Controls.Add(_deleteButton, 3, 0);
 
+            _catalogFiltersPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                WrapContents = true,
+                AutoScroll = true,
+                Padding = new Padding(0),
+                Margin = new Padding(0, 2, 0, 2)
+            };
+            catalogLayout.Controls.Add(_catalogFiltersPanel, 0, 1);
+
             _list = new ListView
             {
                 Dock = DockStyle.Fill,
@@ -469,7 +502,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 await OnCatalogSelectionChangedAsync().ConfigureAwait(true);
             };
             _list.DoubleClick += async (_, __) => await OpenSelectedAsync();
-            catalogLayout.Controls.Add(_list, 0, 1);
+            catalogLayout.Controls.Add(_list, 0, 2);
 
             _progress = new ProgressBar
             {
@@ -478,7 +511,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Maximum = 100,
                 Style = ProgressBarStyle.Continuous
             };
-            catalogLayout.Controls.Add(_progress, 0, 2);
+            catalogLayout.Controls.Add(_progress, 0, 3);
 
             _statusLabel = new Label
             {
@@ -510,7 +543,208 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Margin = new Padding(0, 2, 0, 2)
             };
             host.Controls.Add(combo, 1, row);
+            // column 2 left empty for rows without «+»
             return combo;
+        }
+
+        private static ComboBox AddLabelCombo(
+            TableLayoutPanel host,
+            int row,
+            string caption,
+            out Button addButton)
+        {
+            var combo = AddLabelCombo(host, row, caption);
+            addButton = new Button
+            {
+                Text = "+",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, 2, 0, 2),
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                FlatStyle = FlatStyle.System,
+                TabStop = false
+            };
+            host.Controls.Add(addButton, 2, row);
+            return combo;
+        }
+
+        private async Task CreatePanelSizeAsync()
+        {
+            if (_busy || PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+                return;
+            if (!ProductionDrawingCreateDialogs.TryCreatePanelSize(this, out var request))
+                return;
+
+            SetBusy(true, "Создание размера панели…");
+            try
+            {
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    await client.CreatePanelSizeAsync(request).ConfigureAwait(true);
+                    await ReloadLabelOptionsAndSelectAsync(
+                            "prod_drawing_panel_size_code",
+                            request.BuildCode())
+                        .ConfigureAwait(true);
+                }
+
+                SetStatus("Размер панели создан: " + request.BuildCode());
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "DWG dB", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                SetStatus("Ошибка создания размера: " + Short(ex.Message));
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
+        private async Task CreatePerforationAsync()
+        {
+            await CreateBrandEntityAsync(
+                    "Новая перфорация",
+                    "prod_drawing_perforation_code",
+                    create: (client, req, ct) => client.CreatePerforationAsync(req, ct))
+                .ConfigureAwait(true);
+        }
+
+        private async Task CreateEdgeAsync()
+        {
+            await CreateBrandEntityAsync(
+                    "Новая кромка",
+                    "prod_drawing_edge_code",
+                    create: (client, req, ct) => client.CreateEdgeAsync(req, ct))
+                .ConfigureAwait(true);
+        }
+
+        private async Task CreateBrandEntityAsync(
+            string title,
+            string fieldCode,
+            Func<DwgApiClient, BrandEntityCreateRequest, CancellationToken, Task> create)
+        {
+            if (_busy || PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+                return;
+
+            var brand = GetSelectedCode(_brandCombo);
+            if (string.IsNullOrWhiteSpace(brand))
+            {
+                MessageBox.Show(
+                    this,
+                    "Сначала выберите бренд.",
+                    "DWG dB",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!ProductionDrawingCreateDialogs.TryCreateBrandEntity(this, title, brand!, out var request))
+                return;
+
+            SetBusy(true, "Создание…");
+            try
+            {
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    await create(client, request, CancellationToken.None).ConfigureAwait(true);
+                    await ReloadLabelOptionsAndSelectAsync(fieldCode, request.Code)
+                        .ConfigureAwait(true);
+                }
+
+                SetStatus(title.Replace("Новая ", "").Replace("Новый ", "") + " создана: " + request.Code);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "DWG dB", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                SetStatus("Ошибка создания: " + Short(ex.Message));
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
+        private async Task ReloadLabelOptionsAndSelectAsync(string fieldCode, string newCode)
+        {
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+                return;
+
+            using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+            {
+                var options = await client
+                    .GetLabelOptionsAsync(CollectLabelSelections())
+                    .ConfigureAwait(true);
+
+                var preserved = new ProductionDrawingLabels
+                {
+                    UserUuid = GetSelectedCode(_userCombo) ?? string.Empty,
+                    GlobalCategoryCode = GetSelectedCode(_categoryCombo) ?? string.Empty,
+                    BrandCode = GetSelectedCode(_brandCombo) ?? string.Empty,
+                    ModelCode = GetSelectedCode(_modelCombo) ?? string.Empty,
+                    PerforationCode = GetSelectedCode(_perforationCombo) ?? string.Empty,
+                    EdgeCode = GetSelectedCode(_edgeCombo) ?? string.Empty,
+                    PanelSizeCode = GetSelectedCode(_sizeCombo) ?? string.Empty
+                };
+
+                if (string.Equals(fieldCode, "prod_drawing_perforation_code", StringComparison.OrdinalIgnoreCase))
+                    preserved.PerforationCode = newCode;
+                else if (string.Equals(fieldCode, "prod_drawing_edge_code", StringComparison.OrdinalIgnoreCase))
+                    preserved.EdgeCode = newCode;
+                else if (string.Equals(fieldCode, "prod_drawing_panel_size_code", StringComparison.OrdinalIgnoreCase))
+                    preserved.PanelSizeCode = newCode;
+
+                _suppressLabelCascade = true;
+                try
+                {
+                    BindLabelComboOptions(options);
+                    // Ensure newly created option is present even if refs cache lag.
+                    EnsureOptionPresent(fieldCode, newCode);
+                    ApplyLabelsToUi(preserved);
+                }
+                finally
+                {
+                    _suppressLabelCascade = false;
+                }
+            }
+
+            UpdateReferenceCreateButtons();
+        }
+
+        private void EnsureOptionPresent(string fieldCode, string code)
+        {
+            if (string.IsNullOrWhiteSpace(code))
+                return;
+
+            ComboBox? combo = null;
+            if (string.Equals(fieldCode, "prod_drawing_perforation_code", StringComparison.OrdinalIgnoreCase))
+                combo = _perforationCombo;
+            else if (string.Equals(fieldCode, "prod_drawing_edge_code", StringComparison.OrdinalIgnoreCase))
+                combo = _edgeCombo;
+            else if (string.Equals(fieldCode, "prod_drawing_panel_size_code", StringComparison.OrdinalIgnoreCase))
+                combo = _sizeCombo;
+
+            if (combo == null)
+                return;
+
+            foreach (var item in combo.Items)
+            {
+                if (item is FilterOption fo
+                    && string.Equals(fo.Code, code, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+
+            combo.Items.Add(new FilterOption { Code = code, Name = code });
+        }
+
+        private void UpdateReferenceCreateButtons()
+        {
+            var editorOn = _perforationCombo != null && _perforationCombo.Enabled;
+            var hasBrand = !string.IsNullOrWhiteSpace(GetSelectedCode(_brandCombo));
+            if (_addSizeButton != null && !_addSizeButton.IsDisposed)
+                _addSizeButton.Enabled = editorOn && !_busy;
+            if (_addPerforationButton != null && !_addPerforationButton.IsDisposed)
+                _addPerforationButton.Enabled = editorOn && hasBrand && !_busy;
+            if (_addEdgeButton != null && !_addEdgeButton.IsDisposed)
+                _addEdgeButton.Enabled = editorOn && hasBrand && !_busy;
         }
 
         public void RefreshOnShow()
@@ -743,15 +977,198 @@ namespace AcadDwgBrowser.Plugin.Ui
             PluginApp.Settings.ContentType = "production_drawings";
             using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session!))
             {
-                var filtersTask = client.GetFiltersAsync(cancellationToken);
-                var filesTask = client.ListFilesAsync(cancellationToken);
-                await Task.WhenAll(filtersTask, filesTask).ConfigureAwait(true);
+                // Web parity: list filters come from GET /content/list (not /content/filters).
+                var catalog = await client
+                    .ListCatalogAsync(CollectCatalogFilterParams(), cancellationToken)
+                    .ConfigureAwait(true);
+                BindCatalogFilters(catalog.Filters);
 
-                BindFilters(filtersTask.Result);
-                _allFiles = new List<DwgFileInfo>(filesTask.Result);
+                _allFiles = new List<DwgFileInfo>(catalog.Files);
                 ApplyDisplayNameOverrides();
                 ApplyFilter();
+
+                // Web parity: label combos use form POST + references (+ cascade query).
+                var labelOptions = await client
+                    .GetLabelOptionsAsync(CollectLabelSelections(), cancellationToken)
+                    .ConfigureAwait(true);
+                BindFilters(labelOptions);
+
                 SetStatus($"Производственные чертежи: {_allFiles.Count}");
+            }
+        }
+
+        private Dictionary<string, string> CollectCatalogFilterParams()
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in _catalogFilterValues)
+            {
+                if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+                    map[pair.Key] = pair.Value;
+            }
+
+            return map;
+        }
+
+        private Dictionary<string, string> CollectLabelSelections()
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            void Add(string code, ComboBox combo)
+            {
+                var value = GetSelectedCode(combo);
+                if (!string.IsNullOrWhiteSpace(value))
+                    map[code] = value!;
+            }
+
+            Add("user_uuid", _userCombo);
+            Add("global_category_code", _categoryCombo);
+            Add("global_cat_code", _categoryCombo);
+            Add("brand_code", _brandCombo);
+            Add("model_code", _modelCombo);
+            Add("prod_drawing_perforation_code", _perforationCombo);
+            Add("prod_drawing_edge_code", _edgeCombo);
+            Add("prod_drawing_panel_size_code", _sizeCombo);
+            return map;
+        }
+
+        private void WireLabelCascade(ComboBox combo)
+        {
+            combo.SelectedIndexChanged += async (_, __) =>
+            {
+                if (_suppressLabelCascade || _busy)
+                    return;
+                await OnLabelCascadeAsync().ConfigureAwait(true);
+            };
+        }
+
+        private async Task OnLabelCascadeAsync()
+        {
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+                return;
+
+            _labelCascadeCts?.Cancel();
+            _labelCascadeCts = new CancellationTokenSource();
+            var token = _labelCascadeCts.Token;
+
+            try
+            {
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    var options = await client
+                        .GetLabelOptionsAsync(CollectLabelSelections(), token)
+                        .ConfigureAwait(true);
+                    if (token.IsCancellationRequested)
+                        return;
+
+                    var preserved = new ProductionDrawingLabels
+                    {
+                        UserUuid = GetSelectedCode(_userCombo) ?? string.Empty,
+                        GlobalCategoryCode = GetSelectedCode(_categoryCombo) ?? string.Empty,
+                        BrandCode = GetSelectedCode(_brandCombo) ?? string.Empty,
+                        ModelCode = GetSelectedCode(_modelCombo) ?? string.Empty,
+                        PerforationCode = GetSelectedCode(_perforationCombo) ?? string.Empty,
+                        EdgeCode = GetSelectedCode(_edgeCombo) ?? string.Empty,
+                        PanelSizeCode = GetSelectedCode(_sizeCombo) ?? string.Empty
+                    };
+
+                    _suppressLabelCascade = true;
+                    try
+                    {
+                        BindLabelComboOptions(options);
+                        ApplyLabelsToUi(preserved.HasAnyValue ? preserved : null);
+                    }
+                    finally
+                    {
+                        _suppressLabelCascade = false;
+                    }
+                }
+            }
+                    catch (OperationCanceledException)
+            {
+                // newer cascade started
+            }
+            catch
+            {
+                // keep previous options if cascade fails
+            }
+        }
+
+        private void BindCatalogFilters(IReadOnlyList<FilterEntity> filters)
+        {
+            _catalogFilters = filters != null
+                ? new List<FilterEntity>(filters)
+                : new List<FilterEntity>();
+
+            _suppressCatalogFilterEvents = true;
+            try
+            {
+                _catalogFiltersPanel.SuspendLayout();
+                _catalogFiltersPanel.Controls.Clear();
+
+                foreach (var filter in _catalogFilters)
+                {
+                    if (filter == null || string.IsNullOrWhiteSpace(filter.Code))
+                        continue;
+                    // Skip empty option sets — nothing to filter by.
+                    if (filter.Options == null || filter.Options.Count == 0)
+                        continue;
+
+                    var combo = new ComboBox
+                    {
+                        DropDownStyle = ComboBoxStyle.DropDownList,
+                        Font = new Font("Segoe UI", 8f),
+                        Width = 150,
+                        Margin = new Padding(0, 2, 6, 2),
+                        Tag = filter.Code
+                    };
+                    combo.Items.Add(new FilterOption
+                    {
+                        Code = string.Empty,
+                        Name = "— " + (string.IsNullOrWhiteSpace(filter.Name) ? filter.Code : filter.Name) + " —"
+                    });
+                    foreach (var opt in filter.Options)
+                    {
+                        if (opt == null || string.IsNullOrWhiteSpace(opt.Code))
+                            continue;
+                        combo.Items.Add(opt);
+                    }
+
+                    var selected = 0;
+                    if (_catalogFilterValues.TryGetValue(filter.Code, out var current)
+                        && !string.IsNullOrWhiteSpace(current))
+                    {
+                        for (var i = 0; i < combo.Items.Count; i++)
+                        {
+                            if (combo.Items[i] is FilterOption fo
+                                && string.Equals(fo.Code, current, StringComparison.OrdinalIgnoreCase))
+                            {
+                                selected = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    combo.SelectedIndex = combo.Items.Count > 0 ? selected : -1;
+                    combo.SelectedIndexChanged += async (_, __) =>
+                    {
+                        if (_suppressCatalogFilterEvents || _busy)
+                            return;
+                        var code = combo.Tag as string;
+                        if (string.IsNullOrWhiteSpace(code))
+                            return;
+                        var value = GetSelectedCode(combo);
+                        if (string.IsNullOrWhiteSpace(value))
+                            _catalogFilterValues.Remove(code!);
+                        else
+                            _catalogFilterValues[code!] = value!;
+                        await ReloadAsync().ConfigureAwait(true);
+                    };
+                    _catalogFiltersPanel.Controls.Add(combo);
+                }
+            }
+            finally
+            {
+                _catalogFiltersPanel.ResumeLayout();
+                _suppressCatalogFilterEvents = false;
             }
         }
 
@@ -2183,6 +2600,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             _perforationCombo.Enabled = enabled;
             _edgeCombo.Enabled = enabled;
             _sizeCombo.Enabled = enabled;
+            UpdateReferenceCreateButtons();
         }
 
         private void BeginInvokeSafe(Action action)
@@ -2256,6 +2674,34 @@ namespace AcadDwgBrowser.Plugin.Ui
 
         private void BindFilters(IReadOnlyList<FilterEntity> filters)
         {
+            _suppressLabelCascade = true;
+            try
+            {
+                BindLabelComboOptions(filters);
+
+                // Keep editor labels aligned with active drawing, or catalog selection if none.
+                if (OpenDrawingRegistry.TryGetCurrent(out var current, out _))
+                {
+                    ApplyLabelsToUi(current.Labels);
+                }
+                else if (_list.SelectedItems.Count > 0
+                         && _list.SelectedItems[0].Tag is DwgFileInfo selected)
+                {
+                    ApplyLabelsToUi(selected.Labels);
+                }
+                else
+                {
+                    ApplyLabelsToUi(null);
+                }
+            }
+            finally
+            {
+                _suppressLabelCascade = false;
+            }
+        }
+
+        private void BindLabelComboOptions(IReadOnlyList<FilterEntity> filters)
+        {
             _filters = filters != null
                 ? new List<FilterEntity>(filters)
                 : new List<FilterEntity>();
@@ -2277,21 +2723,6 @@ namespace AcadDwgBrowser.Plugin.Ui
                 "prod_drawing_panel_size_code",
                 "prod_drawing_panel_size",
                 "panel_size"), "Размер панели");
-
-            // Keep editor labels aligned with active drawing, or catalog selection if none.
-            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _))
-            {
-                ApplyLabelsToUi(current.Labels);
-            }
-            else if (_list.SelectedItems.Count > 0
-                     && _list.SelectedItems[0].Tag is DwgFileInfo selected)
-            {
-                ApplyLabelsToUi(selected.Labels);
-            }
-            else
-            {
-                ApplyLabelsToUi(null);
-            }
         }
 
         private async Task OnCatalogSelectionChangedAsync()
@@ -2441,13 +2872,22 @@ namespace AcadDwgBrowser.Plugin.Ui
             if (_userCombo == null || _userCombo.IsDisposed)
                 return;
 
-            SelectComboCode(_userCombo, labels?.UserUuid);
-            SelectComboCode(_categoryCombo, labels?.GlobalCategoryCode);
-            SelectComboCode(_brandCombo, labels?.BrandCode);
-            SelectComboCode(_modelCombo, labels?.ModelCode);
-            SelectComboCode(_perforationCombo, labels?.PerforationCode);
-            SelectComboCode(_edgeCombo, labels?.EdgeCode);
-            SelectComboCode(_sizeCombo, labels?.PanelSizeCode);
+            var prev = _suppressLabelCascade;
+            _suppressLabelCascade = true;
+            try
+            {
+                SelectComboCode(_userCombo, labels?.UserUuid);
+                SelectComboCode(_categoryCombo, labels?.GlobalCategoryCode);
+                SelectComboCode(_brandCombo, labels?.BrandCode);
+                SelectComboCode(_modelCombo, labels?.ModelCode);
+                SelectComboCode(_perforationCombo, labels?.PerforationCode);
+                SelectComboCode(_edgeCombo, labels?.EdgeCode);
+                SelectComboCode(_sizeCombo, labels?.PanelSizeCode);
+            }
+            finally
+            {
+                _suppressLabelCascade = prev;
+            }
         }
 
         private static void SelectComboCode(ComboBox combo, string? code)
@@ -2586,6 +3026,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             _logoutButton.Enabled = !busy;
             _filterBox.Enabled = !busy;
             UpdateCatalogActionButtons();
+            UpdateReferenceCreateButtons();
             if (status != null)
                 SetStatus(status);
             UpdateActiveLabel();
@@ -2626,6 +3067,8 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _cts?.Dispose();
                 _labelsCts?.Cancel();
                 _labelsCts?.Dispose();
+                _labelCascadeCts?.Cancel();
+                _labelCascadeCts?.Dispose();
             }
 
             base.Dispose(disposing);

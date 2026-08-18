@@ -46,10 +46,18 @@ namespace AcadDwgBrowser.Core.Services
 
         public async Task<IReadOnlyList<DwgFileInfo>> ListFilesAsync(CancellationToken cancellationToken = default)
         {
+            var page = await ListCatalogAsync(null, cancellationToken).ConfigureAwait(false);
+            return page.Files;
+        }
+
+        public async Task<ContentCatalogPage> ListCatalogAsync(
+            IReadOnlyDictionary<string, string>? filters = null,
+            CancellationToken cancellationToken = default)
+        {
             // Always production drawings (or configured ContentType, default production_drawings).
             _settings.ContentType = _settings.ResolveContentType();
 
-            var endpoint = _settings.BuildContentListUrl();
+            var endpoint = _settings.BuildContentListUrl(filters);
             using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
             {
                 await EnsureOkAsync(response).ConfigureAwait(false);
@@ -66,7 +74,21 @@ namespace AcadDwgBrowser.Core.Services
                     .ToList();
 
                 await EnrichRejectionCommentsAsync(files, cancellationToken).ConfigureAwait(false);
-                return files;
+
+                var filterEntities = payload.Data?.Filters != null
+                    ? new List<FilterEntity>(payload.Data.Filters)
+                    : new List<FilterEntity>();
+
+                AuthDebugLog.Write(
+                    "ListCatalog filters=" + filterEntities.Count
+                    + " files=" + files.Count
+                    + " qs=" + Truncate(endpoint));
+
+                return new ContentCatalogPage
+                {
+                    Files = files,
+                    Filters = filterEntities
+                };
             }
         }
 
@@ -859,55 +881,68 @@ namespace AcadDwgBrowser.Core.Services
             }
         }
 
-        public async Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(
+        public Task<IReadOnlyList<FilterEntity>> GetFiltersAsync(
+            CancellationToken cancellationToken = default) =>
+            GetLabelOptionsAsync(null, cancellationToken);
+
+        /// <summary>
+        /// Aligns with constr-todo-web DynamicForm:
+        /// 1) POST /content/types/form/{code} with current list selections (cascade)
+        /// 2) GET /content/references/{source}?{query}&filter=&limit=… for each list field
+        /// </summary>
+        public async Task<IReadOnlyList<FilterEntity>> GetLabelOptionsAsync(
+            IReadOnlyDictionary<string, string>? listValues = null,
             CancellationToken cancellationToken = default)
         {
-            var endpoint = _settings.BuildContentFiltersUrl();
-            List<FilterEntity> filters;
-            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
-            {
-                await EnsureOkAsync(response).ConfigureAwait(false);
-                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var payload = JsonSerializer.Deserialize<FiltersResponse>(json, JsonOptions)
-                              ?? new FiltersResponse();
-                if (payload.Code >= 400)
-                    throw new InvalidOperationException(payload.Error ?? "Ошибка фильтров/меток.");
-                filters = payload.Data ?? new List<FilterEntity>();
-            }
-
-            // /content/filters returns only values already used in content.
-            // Full catalogs: entities (brand/model) + references (user/sizes/edge/perf).
-            var brandTask = TryGetEntityOptionsAsync("brand", cancellationToken);
-            var modelTask = TryGetEntityOptionsAsync("model", cancellationToken);
-            var userTask = TryGetReferenceOptionsAsync("user", cancellationToken);
-            var sizeTask = TryGetReferenceOptionsAsync("prod_drawing_panel_size", cancellationToken);
-            var edgeTask = TryGetReferenceOptionsAsync("prod_drawing_edge", cancellationToken);
-            var perfTask = TryGetReferenceOptionsAsync("prod_drawing_panel_perforation", cancellationToken);
-            var catTask = EnrichGlobalCategoryOptionsAsync(filters, cancellationToken);
-
-            await Task.WhenAll(
-                    brandTask, modelTask, userTask, sizeTask, edgeTask, perfTask, catTask)
+            var fields = await GetContentFormFieldsAsync(listValues, cancellationToken)
                 .ConfigureAwait(false);
 
-            ApplyCatalogOptions(filters, "brand_code", brandTask.Result);
-            var models = modelTask.Result;
-            if (models != null && models.Count > 0)
-            {
-                foreach (var opt in models)
-                    opt.Name = StripBrandPrefixFromModelName(opt.Name, opt.Code);
-            }
+            var listFields = fields
+                .Where(f => f.IsListField && !string.IsNullOrWhiteSpace(f.Source))
+                .ToList();
 
-            ApplyCatalogOptions(filters, "model_code", models);
-            ApplyCatalogOptions(filters, "user_uuid", userTask.Result);
-            ApplyCatalogOptions(filters, "prod_drawing_panel_size_code", sizeTask.Result);
-            ApplyCatalogOptions(filters, "prod_drawing_edge_code", edgeTask.Result);
-            ApplyCatalogOptions(filters, "prod_drawing_perforation_code", perfTask.Result);
+            var tasks = listFields.Select(async field =>
+            {
+                List<FilterOption> options;
+                try
+                {
+                    options = await GetReferenceOptionsAsync(
+                            field.Source!.Trim(),
+                            cancellationToken,
+                            filter: string.Empty,
+                            limit: 500,
+                            offset: 0,
+                            query: field.Query)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    AuthDebugLog.Write(
+                        "Label refs " + field.Code + "/" + field.Source + ": " + ex.Message);
+                    options = new List<FilterOption>();
+                }
+
+                if (string.Equals(field.Code, "model_code", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var opt in options)
+                        opt.Name = StripBrandPrefixFromModelName(opt.Name, opt.Code);
+                }
+
+                return new FilterEntity
+                {
+                    Code = field.Code.Trim(),
+                    Name = string.IsNullOrWhiteSpace(field.Name) ? field.Code : field.Name!.Trim(),
+                    Options = options
+                };
+            }).ToArray();
+
+            var result = (await Task.WhenAll(tasks).ConfigureAwait(false)).ToList();
 
             AuthDebugLog.Write(
-                "Filters enriched: " +
-                string.Join(", ", filters.Select(f => f.Code + "=" + (f.Options?.Count ?? 0))));
+                "Label options (form+refs): " +
+                string.Join(", ", result.Select(f => f.Code + "=" + (f.Options?.Count ?? 0))));
 
-            return filters;
+            return result;
         }
 
         public async Task<ProductionDrawingLabels?> GetContentLabelsAsync(
@@ -949,112 +984,149 @@ namespace AcadDwgBrowser.Core.Services
             };
         }
 
-        private static void ApplyCatalogOptions(
-            List<FilterEntity> filters,
-            string filterCode,
-            List<FilterOption>? options)
-        {
-            if (options == null || options.Count == 0)
-                return;
-
-            var entity = EnsureFilterEntity(filters, filterCode);
-            entity.Options = MergeOptions(options, entity.Options);
-        }
-
-        private static FilterEntity EnsureFilterEntity(List<FilterEntity> filters, string filterCode)
-        {
-            var entity = filters.FirstOrDefault(f =>
-                string.Equals(f.Code, filterCode, StringComparison.OrdinalIgnoreCase));
-            if (entity != null)
-                return entity;
-
-            entity = new FilterEntity
-            {
-                Code = filterCode,
-                Name = filterCode,
-                Options = new List<FilterOption>()
-            };
-            filters.Add(entity);
-            return entity;
-        }
-
-        private async Task EnrichGlobalCategoryOptionsAsync(
-            List<FilterEntity> filters,
+        private async Task<List<ContentFormField>> GetContentFormFieldsAsync(
+            IReadOnlyDictionary<string, string>? listValues,
             CancellationToken cancellationToken)
         {
-            var entity = filters.FirstOrDefault(f =>
-                string.Equals(f.Code, "global_cat_code", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(f.Code, "global_category_code", StringComparison.OrdinalIgnoreCase));
-            if (entity == null)
-                entity = EnsureFilterEntity(filters, "global_cat_code");
-
-            try
+            var endpoint = _settings.BuildContentFormUrl();
+            var bodyMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (listValues != null)
             {
-                var endpoint = _settings.BuildGlobalMenuCategoriesUrl();
-                using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+                foreach (var pair in listValues)
                 {
-                    if (!response.IsSuccessStatusCode)
-                        return;
-
-                    var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                    var payload = JsonSerializer.Deserialize<GlobalMenuCategoriesResponse>(json, JsonOptions)
-                                  ?? new GlobalMenuCategoriesResponse();
-                    if (payload.Code >= 400 || payload.Data == null || payload.Data.Count == 0)
-                        return;
-
-                    var options = payload.Data
-                        .Where(c => !string.IsNullOrWhiteSpace(c.Type))
-                        .Select(c => new FilterOption
-                        {
-                            Code = c.Type.Trim(),
-                            Name = string.IsNullOrWhiteSpace(c.Name) ? c.Type.Trim() : c.Name.Trim()
-                        })
-                        .ToList();
-                    entity.Options = MergeOptions(options, entity.Options);
+                    if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                        continue;
+                    bodyMap[pair.Key.Trim()] = pair.Value.Trim();
                 }
             }
-            catch (Exception ex)
+
+            var jsonBody = JsonSerializer.Serialize(bodyMap);
+            using (var content = new StringContent(jsonBody, Encoding.UTF8, "application/json"))
+            using (var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = content })
+            using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
             {
-                AuthDebugLog.Write("Enrich global_cat_code: " + ex.Message);
+                // Fall back to legacy GET schema if POST is unavailable.
+                if (!response.IsSuccessStatusCode)
+                {
+                    AuthDebugLog.Write(
+                        "content form POST " + (int)response.StatusCode + " — fallback GET");
+                    return await GetContentFormFieldsViaGetAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using (var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json))
+                {
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("code", out var codeEl)
+                        && codeEl.ValueKind == JsonValueKind.Number
+                        && codeEl.GetInt32() >= 400)
+                    {
+                        var err = root.TryGetProperty("error", out var e) ? e.GetString() : null;
+                        throw new InvalidOperationException(err ?? "Ошибка схемы формы.");
+                    }
+
+                    if (!root.TryGetProperty("data", out var data))
+                        return new List<ContentFormField>();
+
+                    if (data.ValueKind == JsonValueKind.Object
+                        && data.TryGetProperty("fields", out var fieldsEl)
+                        && fieldsEl.ValueKind == JsonValueKind.Array)
+                    {
+                        return ParseFormFields(fieldsEl);
+                    }
+
+                    if (data.ValueKind == JsonValueKind.Array)
+                        return ParseDocTypeStructFields(data);
+                }
+
+                return new List<ContentFormField>();
             }
         }
 
-        private async Task<List<FilterOption>?> TryGetEntityOptionsAsync(
-            string entityType,
+        private async Task<List<ContentFormField>> GetContentFormFieldsViaGetAsync(
             CancellationToken cancellationToken)
         {
-            try
+            var endpoint = _settings.BuildContentFormUrl();
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
             {
-                return await GetEntityOptionsAsync(entityType, cancellationToken).ConfigureAwait(false);
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using (var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json))
+                {
+                    if (!doc.RootElement.TryGetProperty("data", out var data))
+                        return new List<ContentFormField>();
+                    if (data.ValueKind == JsonValueKind.Array)
+                        return ParseDocTypeStructFields(data);
+                    if (data.ValueKind == JsonValueKind.Object
+                        && data.TryGetProperty("fields", out var fieldsEl))
+                        return ParseFormFields(fieldsEl);
+                }
             }
-            catch (Exception ex)
-            {
-                AuthDebugLog.Write("Enrich entities/" + entityType + ": " + ex.Message);
-                return null;
-            }
+
+            return new List<ContentFormField>();
         }
 
-        private async Task<List<FilterOption>?> TryGetReferenceOptionsAsync(
-            string referenceCode,
-            CancellationToken cancellationToken)
+        private static List<ContentFormField> ParseFormFields(JsonElement fieldsEl)
         {
-            try
+            var list = new List<ContentFormField>();
+            foreach (var el in fieldsEl.EnumerateArray())
             {
-                return await GetReferenceOptionsAsync(referenceCode, cancellationToken)
-                    .ConfigureAwait(false);
+                var field = new ContentFormField
+                {
+                    Code = el.TryGetProperty("code", out var c) ? c.GetString() ?? string.Empty : string.Empty,
+                    Name = el.TryGetProperty("name", out var n) ? n.GetString() : null,
+                    Type = el.TryGetProperty("type", out var t) ? t.GetString() : null,
+                    Source = ReadStringOrNull(el, "source"),
+                    Query = el.TryGetProperty("query", out var q) ? q.GetString() : null,
+                    Required = el.TryGetProperty("required", out var r)
+                               && r.ValueKind == JsonValueKind.True,
+                    Disabled = el.TryGetProperty("disabled", out var d)
+                               && d.ValueKind == JsonValueKind.True
+                };
+                if (!string.IsNullOrWhiteSpace(field.Code))
+                    list.Add(field);
             }
-            catch (Exception ex)
+
+            return list;
+        }
+
+        private static List<ContentFormField> ParseDocTypeStructFields(JsonElement dataArray)
+        {
+            foreach (var doc in dataArray.EnumerateArray())
             {
-                AuthDebugLog.Write("Enrich references/" + referenceCode + ": " + ex.Message);
+                if (!doc.TryGetProperty("fields", out var fieldsEl)
+                    || fieldsEl.ValueKind != JsonValueKind.Array)
+                    continue;
+                var parsed = ParseFormFields(fieldsEl);
+                if (parsed.Count > 0)
+                    return parsed;
+            }
+
+            return new List<ContentFormField>();
+        }
+
+        private static string? ReadStringOrNull(JsonElement el, string name)
+        {
+            if (!el.TryGetProperty(name, out var prop))
                 return null;
-            }
+            if (prop.ValueKind == JsonValueKind.String)
+                return prop.GetString();
+            // source may be serialized as a non-string enum token in some payloads
+            if (prop.ValueKind == JsonValueKind.Number)
+                return prop.GetRawText();
+            return prop.ValueKind == JsonValueKind.Null ? null : prop.ToString();
         }
 
         private async Task<List<FilterOption>> GetReferenceOptionsAsync(
             string referenceCode,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? filter = null,
+            int limit = 500,
+            int offset = 0,
+            string? query = null)
         {
-            var endpoint = _settings.BuildContentReferencesUrl(referenceCode);
+            var endpoint = _settings.BuildContentReferencesUrl(
+                referenceCode, limit, offset, filter, query);
             using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
             {
                 await EnsureOkAsync(response).ConfigureAwait(false);
@@ -1066,31 +1138,6 @@ namespace AcadDwgBrowser.Core.Services
                         payload.Error ?? "Ошибка справочника references/" + referenceCode);
 
                 return (payload.Data ?? new List<FilterOption>())
-                    .Where(e => !string.IsNullOrWhiteSpace(e.Code))
-                    .Select(e => new FilterOption
-                    {
-                        Code = e.Code.Trim(),
-                        Name = string.IsNullOrWhiteSpace(e.Name) ? e.Code.Trim() : e.Name.Trim()
-                    })
-                    .ToList();
-            }
-        }
-
-        private async Task<List<FilterOption>> GetEntityOptionsAsync(
-            string entityType,
-            CancellationToken cancellationToken)
-        {
-            var endpoint = _settings.BuildEntitiesUrl(entityType);
-            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
-            {
-                await EnsureOkAsync(response).ConfigureAwait(false);
-                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var payload = JsonSerializer.Deserialize<EntitiesListResponse>(json, JsonOptions)
-                              ?? new EntitiesListResponse();
-                if (payload.Code >= 400)
-                    throw new InvalidOperationException(payload.Error ?? "Ошибка справочника " + entityType);
-
-                return (payload.Data ?? new List<EntityItem>())
                     .Where(e => !string.IsNullOrWhiteSpace(e.Code))
                     .Select(e => new FilterOption
                     {
@@ -1130,34 +1177,50 @@ namespace AcadDwgBrowser.Core.Services
             return string.IsNullOrWhiteSpace(display) ? (code ?? name ?? string.Empty) : display;
         }
 
-        private static List<FilterOption> MergeOptions(
-            List<FilterOption>? existing,
-            List<FilterOption> extra)
+        public Task CreatePanelSizeAsync(
+            PanelSizeCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            PostProductionDrawingReferenceAsync(
+                _settings.BuildPanelSizeCreateUrl(),
+                request ?? throw new ArgumentNullException(nameof(request)),
+                cancellationToken);
+
+        public Task CreatePerforationAsync(
+            BrandEntityCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            PostProductionDrawingReferenceAsync(
+                _settings.BuildPerforationCreateUrl(),
+                request ?? throw new ArgumentNullException(nameof(request)),
+                cancellationToken);
+
+        public Task CreateEdgeAsync(
+            BrandEntityCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            PostProductionDrawingReferenceAsync(
+                _settings.BuildEdgeCreateUrl(),
+                request ?? throw new ArgumentNullException(nameof(request)),
+                cancellationToken);
+
+        private async Task PostProductionDrawingReferenceAsync<T>(
+            string endpoint,
+            T body,
+            CancellationToken cancellationToken)
         {
-            var map = new Dictionary<string, FilterOption>(StringComparer.OrdinalIgnoreCase);
-            foreach (var opt in existing ?? new List<FilterOption>())
+            var jsonBody = JsonSerializer.Serialize(body, JsonOptions);
+            AuthDebugLog.Write("POST " + endpoint + " body=" + Truncate(jsonBody));
+            using (var content = new StringContent(jsonBody, Encoding.UTF8, "application/json"))
+            using (var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = content })
+            using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
             {
-                if (opt == null || string.IsNullOrWhiteSpace(opt.Code))
-                    continue;
-                map[opt.Code.Trim()] = opt;
+                var status = (int)response.StatusCode;
+                var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                AuthDebugLog.Write("POST " + endpoint + " HTTP " + status + " body=" + Truncate(responseBody));
+                // Web accepts 201 Created with empty body.
+                if (status < 200 || status >= 300)
+                    throw new InvalidOperationException(ExtractErrorMessage(responseBody, status));
+                if (!string.IsNullOrWhiteSpace(responseBody))
+                    EnsureApiSuccess(responseBody);
             }
-
-            foreach (var opt in extra)
-            {
-                if (opt == null || string.IsNullOrWhiteSpace(opt.Code))
-                    continue;
-                var code = opt.Code.Trim();
-                if (!map.TryGetValue(code, out var prev)
-                    || string.IsNullOrWhiteSpace(prev.Name)
-                    || string.Equals(prev.Name, prev.Code, StringComparison.Ordinal))
-                {
-                    map[code] = opt;
-                }
-            }
-
-            return map.Values
-                .OrderBy(o => o.Name ?? o.Code, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
         }
 
         public async Task<DwgFileInfo> CreateContentAsync(
