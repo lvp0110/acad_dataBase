@@ -32,9 +32,15 @@ namespace AcadDwgBrowser.Plugin.Ribbon
                 var radius = size * 0.22f;
 
                 using (var path = RoundedRect(rect, radius))
-                using (var fill = new SolidBrush(System.Drawing.Color.FromArgb(255, 31, 111, 235)))
+                using (var fill = new SolidBrush(System.Drawing.Color.FromArgb(0x1E, 0x2A, 0x32)))
                 {
                     g.FillPath(fill, path);
+                }
+
+                var bar = Math.Max(2, size / 8);
+                using (var accent = new SolidBrush(System.Drawing.Color.FromArgb(0x6C, 0xAB, 0xC8)))
+                {
+                    g.FillRectangle(accent, pad, size - pad - bar, size - pad * 2, bar);
                 }
 
                 var fontSize = size >= 28 ? size * 0.42f : size * 0.48f;

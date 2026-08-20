@@ -8,15 +8,15 @@ using AcadDwgBrowser.Core.Models;
 namespace AcadDwgBrowser.Plugin.Ui
 {
     /// <summary>
-    /// Compact dialog to pick approvers per policy step before POST /content/toApproval/{id}.
+    /// Pick replacement unsigned assignees for PUT /content/toApproval/assignees/{id}.
     /// </summary>
-    internal sealed class ApprovalSubmitDialog : Form
+    internal sealed class ApprovalAssigneesDialog : Form
     {
         private readonly List<StepUi> _steps = new List<StepUi>();
 
-        private ApprovalSubmitDialog()
+        private ApprovalAssigneesDialog()
         {
-            Text = "Отправка на согласование";
+            Text = "Замена согласующих";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
@@ -26,16 +26,19 @@ namespace AcadDwgBrowser.Plugin.Ui
             PluginTheme.ApplyForm(this);
         }
 
-        public StartApprovalProcessRequest? Result { get; private set; }
+        public IReadOnlyList<UpdateApprovalAssigneesRequest> Result { get; private set; } =
+            Array.Empty<UpdateApprovalAssigneesRequest>();
 
-        public static ApprovalSubmitDialog Create(IReadOnlyList<ApprovalPreviewStep> steps, string drawingName)
+        public static ApprovalAssigneesDialog Create(
+            IReadOnlyList<ContentApprovalStep> steps,
+            string drawingName)
         {
-            var dlg = new ApprovalSubmitDialog();
+            var dlg = new ApprovalAssigneesDialog();
             dlg.BuildUi(steps, drawingName);
             return dlg;
         }
 
-        private void BuildUi(IReadOnlyList<ApprovalPreviewStep> steps, string drawingName)
+        private void BuildUi(IReadOnlyList<ContentApprovalStep> steps, string drawingName)
         {
             var root = new TableLayoutPanel
             {
@@ -44,7 +47,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 RowCount = 3,
                 Padding = new Padding(10)
             };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             Controls.Add(root);
@@ -52,7 +55,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             root.Controls.Add(new Label
             {
                 Dock = DockStyle.Fill,
-                Text = "Чертёж: " + (drawingName ?? "—") + "\nОтметьте согласующих по шагам политики.",
+                Text = "Чертёж: " + (drawingName ?? "—")
+                       + "\nМожно заменить тех, кто ещё не принял решение. Уже подписавшие шаги недоступны.",
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = PluginTheme.Muted,
                 Font = PluginTheme.SmallFont
@@ -77,7 +81,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             scroll.Controls.Add(stack);
 
-            var ordered = (steps ?? Array.Empty<ApprovalPreviewStep>())
+            var ordered = (steps ?? Array.Empty<ContentApprovalStep>())
+                .Where(s => s != null && !string.IsNullOrWhiteSpace(s.ProcessStepId))
                 .OrderBy(s => s.StepOrder)
                 .ToList();
 
@@ -86,7 +91,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 stack.Controls.Add(new Label
                 {
                     AutoSize = true,
-                    Text = "Нет шагов согласования для этого чертежа.",
+                    Text = "Нет незавершённых шагов: все согласующие уже приняли решение.",
                     ForeColor = PluginTheme.Danger
                 });
             }
@@ -95,6 +100,10 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 var required = Math.Max(1, step.RequiredSignatures);
                 var users = step.ApprovalUsers ?? new List<ApprovalUser>();
+                var pending = new HashSet<string>(
+                    step.PendingAssigneeIds ?? new List<string>(),
+                    StringComparer.OrdinalIgnoreCase);
+
                 var box = new GroupBox
                 {
                     Text = "Шаг " + step.StepOrder
@@ -122,8 +131,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     if (user == null || string.IsNullOrWhiteSpace(user.UserId))
                         continue;
                     var index = list.Items.Add(user);
-                    // Pre-check first required_signatures users.
-                    if (index < required)
+                    if (pending.Contains(user.UserId.Trim()))
                         list.SetItemChecked(index, true);
                 }
 
@@ -133,7 +141,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     {
                         Dock = DockStyle.Top,
                         Height = 24,
-                        Text = "Нет доступных согласующих",
+                        Text = "Нет доступных согласующих этого отдела",
                         ForeColor = PluginTheme.Danger,
                         Font = PluginTheme.SmallFont
                     });
@@ -149,7 +157,7 @@ namespace AcadDwgBrowser.Plugin.Ui
 
                 _steps.Add(new StepUi
                 {
-                    PolicyStepId = step.PolicyStepId,
+                    ProcessStepId = step.ProcessStepId!.Trim(),
                     RequiredSignatures = required,
                     List = list
                 });
@@ -163,10 +171,11 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             var ok = new Button
             {
-                Text = "Отправить",
+                Text = "Сохранить",
                 Width = 100,
                 Height = 28,
-                DialogResult = DialogResult.None
+                DialogResult = DialogResult.None,
+                Enabled = _steps.Count > 0
             };
             PluginTheme.ApplyPrimaryButton(ok);
             ok.Click += (_, __) => TryAccept();
@@ -187,7 +196,7 @@ namespace AcadDwgBrowser.Plugin.Ui
 
         private void TryAccept()
         {
-            var request = new StartApprovalProcessRequest();
+            var requests = new List<UpdateApprovalAssigneesRequest>();
             foreach (var step in _steps)
             {
                 var selected = new List<string>();
@@ -203,8 +212,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     MessageBox.Show(
                         this,
-                        "На шаге политики " + step.PolicyStepId
-                        + " нужно выбрать не меньше " + step.RequiredSignatures
+                        "На шаге нужно выбрать не меньше " + step.RequiredSignatures
                         + " согласующих.",
                         Text,
                         MessageBoxButtons.OK,
@@ -212,28 +220,28 @@ namespace AcadDwgBrowser.Plugin.Ui
                     return;
                 }
 
-                request.Steps.Add(new ApprovalStepAssignInput
+                requests.Add(new UpdateApprovalAssigneesRequest
                 {
-                    PolicyStepId = step.PolicyStepId,
+                    ProcessStepId = step.ProcessStepId,
                     UserIds = selected
                 });
             }
 
-            if (request.Steps.Count == 0)
+            if (requests.Count == 0)
             {
-                MessageBox.Show(this, "Нет шагов для отправки.", Text,
+                MessageBox.Show(this, "Нет шагов для изменения.", Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            Result = request;
+            Result = requests;
             DialogResult = DialogResult.OK;
             Close();
         }
 
         private sealed class StepUi
         {
-            public int PolicyStepId { get; set; }
+            public string ProcessStepId { get; set; } = string.Empty;
             public int RequiredSignatures { get; set; }
             public CheckedListBox List { get; set; } = null!;
         }

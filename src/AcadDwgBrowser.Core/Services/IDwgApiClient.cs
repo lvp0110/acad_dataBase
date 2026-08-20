@@ -107,5 +107,28 @@ namespace AcadDwgBrowser.Core.Services
             string contentId,
             StartApprovalProcessRequest request,
             CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// GET /content/toApproval/active-preview/{id} — incomplete publication steps
+        /// and assignees who have not decided yet.
+        /// </summary>
+        Task<IReadOnlyList<ContentApprovalStep>> GetActiveApprovalPreviewAsync(
+            string contentId,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// PUT /content/toApproval/assignees/{id} — replace unsigned assignees of one step.
+        /// </summary>
+        Task UpdateApprovalAssigneesAsync(
+            string contentId,
+            UpdateApprovalAssigneesRequest request,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// PUT /content/withdraw/{id} — recall content from active publication approval.
+        /// </summary>
+        Task WithdrawApprovalAsync(
+            string contentId,
+            CancellationToken cancellationToken = default);
     }
 }

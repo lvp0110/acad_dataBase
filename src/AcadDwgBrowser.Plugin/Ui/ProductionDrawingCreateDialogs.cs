@@ -21,7 +21,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 form.MaximizeBox = false;
                 form.ShowInTaskbar = false;
                 form.ClientSize = new Size(360, 220);
-                form.Font = new Font("Segoe UI", 9f);
+                PluginTheme.ApplyForm(form);
 
                 var hint = new Label
                 {
@@ -30,6 +30,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     Height = 36,
                     Padding = new Padding(8, 8, 8, 0)
                 };
+                PluginTheme.ApplyLabel(hint, muted: true);
 
                 var grid = new TableLayoutPanel
                 {
@@ -54,8 +55,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                     Height = 40,
                     Padding = new Padding(8, 4, 8, 8)
                 };
-                var ok = new Button { Text = "Создать", DialogResult = DialogResult.None, Width = 90 };
-                var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Width = 90 };
+                var ok = new Button { Text = "Создать", DialogResult = DialogResult.None, Width = 90, Height = 28 };
+                var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
+                PluginTheme.ApplyPrimaryButton(ok);
+                PluginTheme.ApplyGhostButton(cancel);
                 buttons.Controls.Add(ok);
                 buttons.Controls.Add(cancel);
                 form.CancelButton = cancel;
@@ -106,7 +109,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 form.MaximizeBox = false;
                 form.ShowInTaskbar = false;
                 form.ClientSize = new Size(400, 280);
-                form.Font = new Font("Segoe UI", 9f);
+                PluginTheme.ApplyForm(form);
 
                 var hint = new Label
                 {
@@ -115,6 +118,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     Height = 36,
                     Padding = new Padding(8, 8, 8, 0)
                 };
+                PluginTheme.ApplyLabel(hint, muted: true);
 
                 var grid = new TableLayoutPanel
                 {
@@ -135,6 +139,8 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     Text = "Описание",
                     Dock = DockStyle.Fill,
+                    ForeColor = PluginTheme.Muted,
+                    Font = PluginTheme.CaptionFont,
                     TextAlign = ContentAlignment.TopLeft,
                     Padding = new Padding(0, 6, 0, 0)
                 }, 0, 2);
@@ -145,6 +151,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     ScrollBars = ScrollBars.Vertical,
                     AcceptsReturn = true
                 };
+                PluginTheme.ApplyTextBox(descBox);
                 grid.Controls.Add(descBox, 1, 2);
 
                 var buttons = new FlowLayoutPanel
@@ -154,8 +161,10 @@ namespace AcadDwgBrowser.Plugin.Ui
                     Height = 40,
                     Padding = new Padding(8, 4, 8, 8)
                 };
-                var ok = new Button { Text = "Создать", Width = 90 };
-                var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Width = 90 };
+                var ok = new Button { Text = "Создать", Width = 90, Height = 28 };
+                var cancel = new Button { Text = "Отмена", DialogResult = DialogResult.Cancel, Width = 90, Height = 28 };
+                PluginTheme.ApplyPrimaryButton(ok);
+                PluginTheme.ApplyGhostButton(cancel);
                 buttons.Controls.Add(ok);
                 buttons.Controls.Add(cancel);
                 form.CancelButton = cancel;
@@ -206,9 +215,12 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Text = caption,
                 Dock = DockStyle.Fill,
+                ForeColor = PluginTheme.Muted,
+                Font = PluginTheme.CaptionFont,
                 TextAlign = ContentAlignment.MiddleLeft
             }, 0, row);
             var box = new TextBox { Dock = DockStyle.Fill };
+            PluginTheme.ApplyTextBox(box);
             grid.Controls.Add(box, 1, row);
             return box;
         }
@@ -219,9 +231,12 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Text = caption,
                 Dock = DockStyle.Fill,
+                ForeColor = PluginTheme.Muted,
+                Font = PluginTheme.CaptionFont,
                 TextAlign = ContentAlignment.MiddleLeft
             }, 0, row);
             var box = new TextBox { Dock = DockStyle.Fill };
+            PluginTheme.ApplyTextBox(box);
             grid.Controls.Add(box, 1, row);
             return box;
         }

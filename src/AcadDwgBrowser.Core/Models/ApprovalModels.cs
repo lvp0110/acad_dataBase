@@ -15,6 +15,19 @@ namespace AcadDwgBrowser.Core.Models
         public string? Error { get; set; }
     }
 
+    /// <summary>swagger.ApprovalStepsResponse — GET /content/toApproval/active-preview/{id}.</summary>
+    public sealed class ApprovalStepsResponse
+    {
+        [JsonPropertyName("code")]
+        public int Code { get; set; }
+
+        [JsonPropertyName("data")]
+        public List<ContentApprovalStep> Data { get; set; } = new List<ContentApprovalStep>();
+
+        [JsonPropertyName("error")]
+        public string? Error { get; set; }
+    }
+
     public sealed class ApprovalPreviewStep
     {
         [JsonPropertyName("policy_step_id")]
@@ -94,5 +107,22 @@ namespace AcadDwgBrowser.Core.Models
 
         [JsonPropertyName("approval_users")]
         public List<ApprovalUser> ApprovalUsers { get; set; } = new List<ApprovalUser>();
+
+        /// <summary>
+        /// User IDs already assigned to this incomplete step (from active-preview,
+        /// before department catalog merge). Not serialized.
+        /// </summary>
+        [JsonIgnore]
+        public List<string> PendingAssigneeIds { get; set; } = new List<string>();
+    }
+
+    /// <summary>PUT /content/toApproval/assignees/{id}.</summary>
+    public sealed class UpdateApprovalAssigneesRequest
+    {
+        [JsonPropertyName("process_step_id")]
+        public string ProcessStepId { get; set; } = string.Empty;
+
+        [JsonPropertyName("user_ids")]
+        public List<string> UserIds { get; set; } = new List<string>();
     }
 }

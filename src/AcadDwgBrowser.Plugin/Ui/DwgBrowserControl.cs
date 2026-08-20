@@ -29,11 +29,25 @@ namespace AcadDwgBrowser.Plugin.Ui
         private Button _renameButton = null!;
         private Button _saveButton = null!;
         private Button _approveButton = null!;
+        private Button _withdrawButton = null!;
+        private Button _replaceAssigneesButton = null!;
         private TextBox _filterBox = null!;
         private FlowLayoutPanel _catalogFiltersPanel = null!;
+        private TableLayoutPanel _catalogLayout = null!;
+        private Button _catalogFiltersToggle = null!;
+        private bool _catalogFiltersExpanded;
         private TextBox _nameBox = null!;
         private GroupBox _editorGroup = null!;
         private GroupBox _catalogGroup = null!;
+        private TableLayoutPanel _rootLayout = null!;
+        private TableLayoutPanel _editorLayout = null!;
+        private Panel _labelsBody = null!;
+        private Button _labelsToggle = null!;
+        private bool _labelsExpanded;
+        private const int LabelsBodyHeightPx = 204;
+        private const int EditorSectionCollapsedPx = 206;
+        private const int EditorSectionExpandedPx = 410;
+        private const int CatalogFiltersHeightPx = 58;
         private Label _statusLabel = null!;
         private Label _activeLabel = null!;
         private ComboBox _userCombo = null!;
@@ -68,8 +82,8 @@ namespace AcadDwgBrowser.Plugin.Ui
         public DwgBrowserControl()
         {
             Dock = DockStyle.Fill;
-            BackColor = Color.FromArgb(245, 246, 248);
-            Padding = new Padding(10);
+            Padding = new Padding(0);
+            PluginTheme.ApplyPage(this);
 
             _loginPanel = BuildLoginPanel();
             _catalogPanel = BuildCatalogPanel();
@@ -98,7 +112,15 @@ namespace AcadDwgBrowser.Plugin.Ui
 
         private Panel BuildLoginPanel()
         {
-            var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16) };
+            var panel = new Panel { Dock = DockStyle.Fill };
+            PluginTheme.ApplyPage(panel);
+
+            var body = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(16, 12, 16, 12)
+            };
+            PluginTheme.ApplyPage(body);
 
             var layout = new TableLayoutPanel
             {
@@ -106,71 +128,74 @@ namespace AcadDwgBrowser.Plugin.Ui
                 ColumnCount = 1,
                 RowCount = 10
             };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 12));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            panel.Controls.Add(layout);
+            body.Controls.Add(layout);
 
-            layout.Controls.Add(new Label
+            var title = new Label
             {
                 Text = "Вход в ConstrTodo",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+                Font = PluginTheme.TitleFont,
                 TextAlign = ContentAlignment.MiddleLeft
-            }, 0, 0);
+            };
+            PluginTheme.ApplyLabel(title);
+            title.Font = PluginTheme.TitleFont;
+            layout.Controls.Add(title, 0, 0);
 
-            layout.Controls.Add(new Label
+            var apiCaption = new Label
             {
                 Text = "Адрес API (ApiBaseUrl)",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f),
                 TextAlign = ContentAlignment.BottomLeft
-            }, 0, 1);
+            };
+            PluginTheme.ApplyLabel(apiCaption, muted: true);
+            layout.Controls.Add(apiCaption, 0, 1);
 
             _apiUrlBox = new TextBox
             {
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9.5f),
                 Text = string.Empty
             };
+            PluginTheme.ApplyTextBox(_apiUrlBox);
             layout.Controls.Add(_apiUrlBox, 0, 2);
 
-            layout.Controls.Add(new Label
+            var emailCaption = new Label
             {
                 Text = "Email",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f),
                 TextAlign = ContentAlignment.BottomLeft
-            }, 0, 3);
-
-            _emailBox = new TextBox
-            {
-                Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 10f)
             };
+            PluginTheme.ApplyLabel(emailCaption, muted: true);
+            layout.Controls.Add(emailCaption, 0, 3);
+
+            _emailBox = new TextBox { Dock = DockStyle.Fill };
+            PluginTheme.ApplyTextBox(_emailBox);
             layout.Controls.Add(_emailBox, 0, 4);
 
-            layout.Controls.Add(new Label
+            var passwordCaption = new Label
             {
                 Text = "Пароль",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f),
                 TextAlign = ContentAlignment.BottomLeft
-            }, 0, 5);
+            };
+            PluginTheme.ApplyLabel(passwordCaption, muted: true);
+            layout.Controls.Add(passwordCaption, 0, 5);
 
             _passwordBox = new TextBox
             {
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 10f),
                 UseSystemPasswordChar = true
             };
+            PluginTheme.ApplyTextBox(_passwordBox);
             _passwordBox.KeyDown += async (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter)
@@ -181,7 +206,6 @@ namespace AcadDwgBrowser.Plugin.Ui
             };
             layout.Controls.Add(_passwordBox, 0, 6);
 
-            // spacer row kept for spacing via empty label
             layout.Controls.Add(new Label { Dock = DockStyle.Fill }, 0, 7);
 
             _loginButton = new Button
@@ -189,104 +213,107 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Text = "Войти",
                 Dock = DockStyle.Left,
                 Width = 120,
-                Height = 32,
-                Font = new Font("Segoe UI", 9.5f)
+                Height = 32
             };
+            PluginTheme.ApplyPrimaryButton(_loginButton);
             _loginButton.Click += async (_, __) => await LoginAsync();
             layout.Controls.Add(_loginButton, 0, 8);
 
             _loginStatus = new Label
             {
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 8.5f),
-                ForeColor = Color.FromArgb(70, 70, 70),
                 TextAlign = ContentAlignment.TopLeft,
                 Text = "Введите email и пароль, затем «Войти»."
             };
+            PluginTheme.ApplyLabel(_loginStatus, muted: true);
             layout.Controls.Add(_loginStatus, 0, 9);
 
+            panel.Controls.Add(body);
+            panel.Controls.Add(PluginTheme.CreateHeader("DWG dB"));
             return panel;
         }
 
         private Panel BuildCatalogPanel()
         {
             var panel = new Panel { Dock = DockStyle.Fill, Visible = false };
+            PluginTheme.ApplyPage(panel);
 
-            var root = new TableLayoutPanel
+            _rootLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 4,
                 Padding = new Padding(0)
             };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 340));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-            panel.Controls.Add(root);
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, EditorSectionCollapsedPx));
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            panel.Controls.Add(_rootLayout);
 
-            // —— User bar ——
-            var header = new TableLayoutPanel
+            var header = new Panel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 1
+                BackColor = PluginTheme.Header,
+                Padding = new Padding(12, 6, 8, 6)
             };
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            root.Controls.Add(header, 0, 0);
+            _rootLayout.Controls.Add(header, 0, 0);
+
+            _logoutButton = new Button
+            {
+                Text = "Выйти",
+                Dock = DockStyle.Right,
+                Width = 78,
+                Margin = new Padding(8, 2, 0, 2)
+            };
+            PluginTheme.ApplyGhostButton(_logoutButton);
+            _logoutButton.Click += async (_, __) => await LogoutAsync();
+            header.Controls.Add(_logoutButton);
 
             _userLabel = new Label
             {
                 Text = "Пользователь",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f),
+                ForeColor = Color.White,
+                BackColor = PluginTheme.Header,
+                Font = PluginTheme.UiFont,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            header.Controls.Add(_userLabel, 0, 0);
-
-            _logoutButton = new Button
-            {
-                Text = "Выйти",
-                Dock = DockStyle.Fill,
-                Margin = new Padding(6, 0, 0, 0)
-            };
-            _logoutButton.Click += async (_, __) => await LogoutAsync();
-            header.Controls.Add(_logoutButton, 1, 0);
+            header.Controls.Add(_userLabel);
 
             // —— Section 1: active AutoCAD drawing (new OR catalog edit) ——
             _editorGroup = new GroupBox
             {
                 Text = "1. Активный чертёж AutoCAD",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-                Padding = new Padding(8, 6, 8, 8),
-                Margin = new Padding(0, 4, 0, 4)
+                Padding = new Padding(8, 8, 8, 8),
+                Margin = new Padding(8, 8, 8, 4)
             };
-            root.Controls.Add(_editorGroup, 0, 1);
+            PluginTheme.ApplyGroup(_editorGroup);
+            _rootLayout.Controls.Add(_editorGroup, 0, 1);
 
-            var editorLayout = new TableLayoutPanel
+            _editorLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 5,
                 Padding = new Padding(0, 4, 0, 0)
             };
-            editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-            editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            editorLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            _editorGroup.Controls.Add(editorLayout);
+            _editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            _editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            _editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+            _editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            _editorLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+            _editorGroup.Controls.Add(_editorLayout);
 
             _activeLabel = new Label
             {
                 Dock = DockStyle.Fill,
                 Text = "Активный чертёж: —",
-                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-                ForeColor = Color.FromArgb(70, 70, 70),
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            editorLayout.Controls.Add(_activeLabel, 0, 0);
+            PluginTheme.ApplyLabel(_activeLabel, muted: true);
+            _editorLayout.Controls.Add(_activeLabel, 0, 0);
 
             var nameRow = new TableLayoutPanel
             {
@@ -301,17 +328,99 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Text = "Имя чертежа *",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+                Font = PluginTheme.CaptionFont,
+                ForeColor = PluginTheme.Muted,
                 TextAlign = ContentAlignment.MiddleLeft
             }, 0, 0);
             _nameBox = new TextBox
             {
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f),
                 Margin = new Padding(0, 2, 0, 2)
             };
+            PluginTheme.ApplyTextBox(_nameBox);
             nameRow.Controls.Add(_nameBox, 1, 0);
-            editorLayout.Controls.Add(nameRow, 0, 1);
+            _editorLayout.Controls.Add(nameRow, 0, 1);
+
+            var actions = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 2
+            };
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            _editorLayout.Controls.Add(actions, 0, 2);
+
+            _renameButton = new Button
+            {
+                Text = "Задать имя…",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 4, 0),
+                Enabled = false
+            };
+            PluginTheme.ApplyGhostButton(_renameButton);
+            _renameButton.Click += async (_, __) => await RenameActiveAsync();
+            actions.Controls.Add(_renameButton, 0, 0);
+
+            _saveButton = new Button
+            {
+                Text = "Сохранить",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, 0, 2, 0),
+                Enabled = false
+            };
+            PluginTheme.ApplyPrimaryButton(_saveButton);
+            _saveButton.Click += async (_, __) => await SaveActiveAsync();
+            actions.Controls.Add(_saveButton, 1, 0);
+
+            _approveButton = new Button
+            {
+                Text = "На согласование…",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(4, 0, 0, 0),
+                Enabled = false
+            };
+            PluginTheme.ApplyGhostButton(_approveButton);
+            _approveButton.Click += async (_, __) => await SubmitForApprovalAsync();
+            actions.Controls.Add(_approveButton, 2, 0);
+
+            _withdrawButton = new Button
+            {
+                Text = "Отозвать",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 4, 4, 0),
+                Enabled = false
+            };
+            PluginTheme.ApplyDangerButton(_withdrawButton);
+            _withdrawButton.Click += async (_, __) => await WithdrawFromApprovalAsync();
+            actions.Controls.Add(_withdrawButton, 0, 1);
+
+            _replaceAssigneesButton = new Button
+            {
+                Text = "Заменить согласующего…",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, 4, 0, 0),
+                Enabled = false
+            };
+            PluginTheme.ApplyGhostButton(_replaceAssigneesButton);
+            _replaceAssigneesButton.Click += async (_, __) => await ReplaceApproversAsync();
+            actions.Controls.Add(_replaceAssigneesButton, 1, 1);
+            actions.SetColumnSpan(_replaceAssigneesButton, 2);
+
+            _labelsToggle = new Button
+            {
+                Text = LabelsToggleText(false),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 2, 0, 0),
+                TabStop = false
+            };
+            PluginTheme.ApplyGhostButton(_labelsToggle);
+            _labelsToggle.Click += (_, __) => SetLabelsExpanded(!_labelsExpanded);
+            _editorLayout.Controls.Add(_labelsToggle, 0, 3);
 
             var labelsPanel = new TableLayoutPanel
             {
@@ -326,16 +435,17 @@ namespace AcadDwgBrowser.Plugin.Ui
             for (var i = 0; i < 7; i++)
                 labelsPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
 
-            var labelsScroll = new Panel
+            _labelsBody = new Panel
             {
                 Dock = DockStyle.Fill,
                 AutoScroll = true,
-                Padding = new Padding(0)
+                Padding = new Padding(0),
+                Visible = false
             };
             labelsPanel.Dock = DockStyle.Top;
-            labelsPanel.Height = 7 * 28 + 4;
-            labelsScroll.Controls.Add(labelsPanel);
-            editorLayout.Controls.Add(labelsScroll, 0, 2);
+            labelsPanel.Height = LabelsBodyHeightPx;
+            _labelsBody.Controls.Add(labelsPanel);
+            _editorLayout.Controls.Add(_labelsBody, 0, 4);
 
             _userCombo = AddLabelCombo(labelsPanel, 0, "Заказчик *");
             _categoryCombo = AddLabelCombo(labelsPanel, 1, "Категория *");
@@ -356,73 +466,30 @@ namespace AcadDwgBrowser.Plugin.Ui
             WireLabelCascade(_sizeCombo);
             _brandCombo.SelectedIndexChanged += (_, __) => UpdateReferenceCreateButtons();
 
-            var actions = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 3,
-                RowCount = 1
-            };
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-            editorLayout.Controls.Add(actions, 0, 3);
-
-            _renameButton = new Button
-            {
-                Text = "Задать имя…",
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 0, 4, 0),
-                Font = new Font("Segoe UI", 9f),
-                Enabled = false
-            };
-            _renameButton.Click += async (_, __) => await RenameActiveAsync();
-            actions.Controls.Add(_renameButton, 0, 0);
-
-            _saveButton = new Button
-            {
-                Text = "Сохранить",
-                Dock = DockStyle.Fill,
-                Margin = new Padding(2, 0, 2, 0),
-                Font = new Font("Segoe UI", 9f),
-                Enabled = false
-            };
-            _saveButton.Click += async (_, __) => await SaveActiveAsync();
-            actions.Controls.Add(_saveButton, 1, 0);
-
-            _approveButton = new Button
-            {
-                Text = "На согласование…",
-                Dock = DockStyle.Fill,
-                Margin = new Padding(4, 0, 0, 0),
-                Font = new Font("Segoe UI", 9f),
-                Enabled = false
-            };
-            _approveButton.Click += async (_, __) => await SubmitForApprovalAsync();
-            actions.Controls.Add(_approveButton, 2, 0);
-
             // —— Section 2: catalog from API ——
             _catalogGroup = new GroupBox
             {
                 Text = "2. Каталог — открыть / удалить черновик",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-                Padding = new Padding(8, 6, 8, 8),
-                Margin = new Padding(0, 2, 0, 2)
+                Padding = new Padding(8, 8, 8, 8),
+                Margin = new Padding(8, 2, 8, 4)
             };
-            root.Controls.Add(_catalogGroup, 0, 2);
+            PluginTheme.ApplyGroup(_catalogGroup);
+            _rootLayout.Controls.Add(_catalogGroup, 0, 2);
 
-            var catalogLayout = new TableLayoutPanel
+            _catalogLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 5,
                 Padding = new Padding(0, 4, 0, 0)
             };
-            catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            catalogLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-            _catalogGroup.Controls.Add(catalogLayout);
+            _catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            _catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            _catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+            _catalogLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            _catalogLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+            _catalogGroup.Controls.Add(_catalogLayout);
 
             var toolbar = new TableLayoutPanel
             {
@@ -434,9 +501,10 @@ namespace AcadDwgBrowser.Plugin.Ui
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            catalogLayout.Controls.Add(toolbar, 0, 0);
+            _catalogLayout.Controls.Add(toolbar, 0, 0);
 
-            _filterBox = new TextBox { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9f) };
+            _filterBox = new TextBox { Dock = DockStyle.Fill };
+            PluginTheme.ApplyTextBox(_filterBox);
             _filterBox.TextChanged += (_, __) => ApplyFilter();
             toolbar.Controls.Add(_filterBox, 0, 0);
 
@@ -444,9 +512,9 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Text = "Обновить",
                 Dock = DockStyle.Fill,
-                Margin = new Padding(6, 0, 0, 0),
-                Font = new Font("Segoe UI", 9f)
+                Margin = new Padding(6, 0, 0, 0)
             };
+            PluginTheme.ApplyGhostButton(_refreshButton);
             _refreshButton.Click += async (_, __) => await ReloadAsync();
             toolbar.Controls.Add(_refreshButton, 1, 0);
 
@@ -455,9 +523,9 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Text = "Открыть",
                 Dock = DockStyle.Fill,
                 Margin = new Padding(6, 0, 0, 0),
-                Font = new Font("Segoe UI", 9f),
                 Enabled = false
             };
+            PluginTheme.ApplyPrimaryButton(_openButton);
             _openButton.Click += async (_, __) => await OpenSelectedAsync();
             toolbar.Controls.Add(_openButton, 2, 0);
 
@@ -466,11 +534,23 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Text = "Удалить",
                 Dock = DockStyle.Fill,
                 Margin = new Padding(6, 0, 0, 0),
-                Font = new Font("Segoe UI", 9f),
                 Enabled = false
             };
+            PluginTheme.ApplyDangerButton(_deleteButton);
             _deleteButton.Click += async (_, __) => await DeleteSelectedAsync();
             toolbar.Controls.Add(_deleteButton, 3, 0);
+
+            _catalogFiltersToggle = new Button
+            {
+                Text = CatalogFiltersToggleText(false),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 2, 0, 0),
+                TabStop = false
+            };
+            PluginTheme.ApplyGhostButton(_catalogFiltersToggle);
+            _catalogFiltersToggle.Click += (_, __) => SetCatalogFiltersExpanded(!_catalogFiltersExpanded);
+            _catalogLayout.Controls.Add(_catalogFiltersToggle, 0, 1);
 
             _catalogFiltersPanel = new FlowLayoutPanel
             {
@@ -478,9 +558,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                 WrapContents = true,
                 AutoScroll = true,
                 Padding = new Padding(0),
-                Margin = new Padding(0, 2, 0, 2)
+                Margin = new Padding(0, 2, 0, 2),
+                BackColor = PluginTheme.Page,
+                Visible = false
             };
-            catalogLayout.Controls.Add(_catalogFiltersPanel, 0, 1);
+            _catalogLayout.Controls.Add(_catalogFiltersPanel, 0, 2);
 
             _list = new ListView
             {
@@ -488,11 +570,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                 View = View.Details,
                 FullRowSelect = true,
                 MultiSelect = false,
-                HideSelection = false,
-                Font = new Font("Segoe UI", 9f)
+                HideSelection = false
             };
+            PluginTheme.ApplyListView(_list);
             _list.Columns.Add("Имя", 200);
-            _list.Columns.Add("Статус", 80);
+            _list.Columns.Add("Статус", 120);
             _list.Columns.Add("Метки", 100);
             _list.Columns.Add("Комментарий", 160);
             _list.Columns.Add("Обновлён", 110);
@@ -502,7 +584,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 await OnCatalogSelectionChangedAsync().ConfigureAwait(true);
             };
             _list.DoubleClick += async (_, __) => await OpenSelectedAsync();
-            catalogLayout.Controls.Add(_list, 0, 2);
+            _catalogLayout.Controls.Add(_list, 0, 3);
 
             _progress = new ProgressBar
             {
@@ -511,18 +593,66 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Maximum = 100,
                 Style = ProgressBarStyle.Continuous
             };
-            catalogLayout.Controls.Add(_progress, 0, 3);
+            _catalogLayout.Controls.Add(_progress, 0, 4);
 
+            var footer = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = PluginTheme.Footer,
+                Padding = new Padding(12, 4, 12, 4)
+            };
             _statusLabel = new Label
             {
                 Dock = DockStyle.Fill,
                 Text = "Готово",
                 TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font("Segoe UI", 8.5f)
+                BackColor = PluginTheme.Footer,
+                ForeColor = PluginTheme.Text,
+                Font = PluginTheme.SmallFont
             };
-            root.Controls.Add(_statusLabel, 0, 3);
+            footer.Controls.Add(_statusLabel);
+            _rootLayout.Controls.Add(footer, 0, 3);
 
+            SetLabelsExpanded(false);
             return panel;
+        }
+
+        private static string LabelsToggleText(bool expanded) =>
+            expanded ? "▾  Метки — свернуть" : "▸  Метки — развернуть";
+
+        private void SetLabelsExpanded(bool expanded)
+        {
+            _labelsExpanded = expanded;
+            if (_labelsToggle != null && !_labelsToggle.IsDisposed)
+                _labelsToggle.Text = LabelsToggleText(expanded);
+            if (_labelsBody != null && !_labelsBody.IsDisposed)
+                _labelsBody.Visible = expanded;
+            if (_editorLayout != null && !_editorLayout.IsDisposed && _editorLayout.RowStyles.Count > 4)
+                _editorLayout.RowStyles[4] = new RowStyle(
+                    SizeType.Absolute, expanded ? LabelsBodyHeightPx : 0);
+            if (_rootLayout != null && !_rootLayout.IsDisposed && _rootLayout.RowStyles.Count > 1)
+            {
+                _rootLayout.RowStyles[1] = new RowStyle(
+                    SizeType.Absolute,
+                    expanded ? EditorSectionExpandedPx : EditorSectionCollapsedPx);
+            }
+        }
+
+        private static string CatalogFiltersToggleText(bool expanded) =>
+            expanded ? "▾  Фильтры — свернуть" : "▸  Фильтры — развернуть";
+
+        private void SetCatalogFiltersExpanded(bool expanded)
+        {
+            _catalogFiltersExpanded = expanded;
+            if (_catalogFiltersToggle != null && !_catalogFiltersToggle.IsDisposed)
+                _catalogFiltersToggle.Text = CatalogFiltersToggleText(expanded);
+            if (_catalogFiltersPanel != null && !_catalogFiltersPanel.IsDisposed)
+                _catalogFiltersPanel.Visible = expanded;
+            if (_catalogLayout != null && !_catalogLayout.IsDisposed && _catalogLayout.RowStyles.Count > 2)
+            {
+                _catalogLayout.RowStyles[2] = new RowStyle(
+                    SizeType.Absolute, expanded ? CatalogFiltersHeightPx : 0);
+            }
         }
 
         private static ComboBox AddLabelCombo(TableLayoutPanel host, int row, string caption)
@@ -531,7 +661,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Text = caption,
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+                Font = PluginTheme.CaptionFont,
+                ForeColor = PluginTheme.Muted,
                 TextAlign = ContentAlignment.MiddleLeft
             }, 0, row);
 
@@ -539,9 +670,9 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 Dock = DockStyle.Fill,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = new Font("Segoe UI", 8.5f),
                 Margin = new Padding(0, 2, 0, 2)
             };
+            PluginTheme.ApplyCombo(combo);
             host.Controls.Add(combo, 1, row);
             // column 2 left empty for rows without «+»
             return combo;
@@ -560,9 +691,9 @@ namespace AcadDwgBrowser.Plugin.Ui
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2, 2, 0, 2),
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-                FlatStyle = FlatStyle.System,
                 TabStop = false
             };
+            PluginTheme.ApplyGhostButton(addButton);
             host.Controls.Add(addButton, 2, row);
             return combo;
         }
@@ -787,7 +918,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             var placeholder = url.IndexOf("example.com", StringComparison.OrdinalIgnoreCase) >= 0;
             if (_loginStatus != null && !_loginStatus.IsDisposed)
             {
-                _loginStatus.ForeColor = placeholder ? Color.Firebrick : Color.FromArgb(70, 70, 70);
+                _loginStatus.ForeColor = placeholder ? PluginTheme.Danger : PluginTheme.Muted;
                 if (placeholder)
                     _loginStatus.Text = "Укажите реальный адрес API выше.";
             }
@@ -1115,11 +1246,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                     var combo = new ComboBox
                     {
                         DropDownStyle = ComboBoxStyle.DropDownList,
-                        Font = new Font("Segoe UI", 8f),
                         Width = 150,
                         Margin = new Padding(0, 2, 6, 2),
                         Tag = filter.Code
                     };
+                    PluginTheme.ApplyCombo(combo);
                     combo.Items.Add(new FilterOption
                     {
                         Code = string.Empty,
@@ -1221,11 +1352,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                 AcadDocumentService.WriteMessage(
                     editable
                         ? "Открыт файл: " + localPath
-                        : "Открыт только для просмотра (" + (file.Status ?? "—") + "): " + localPath);
+                        : "Открыт только для просмотра (" + FormatStatus(file.Status) + "): " + localPath);
                 SetStatus(
                     editable
                         ? "Открыто: " + file.Name
-                        : "Просмотр: " + file.Name + " [" + (file.Status ?? "—") + "]");
+                        : "Просмотр: " + file.Name + " [" + FormatStatus(file.Status) + "]");
                 ApplyLabelsToUi(file.Labels);
                 UpdateActiveLabel();
 
@@ -1296,8 +1427,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 MessageBox.Show(
                     this,
-                    "Удалять можно только конструкции в статусе draft (черновик).\nТекущий статус: "
-                    + (file.Status ?? "—"),
+                    "Удалять можно только конструкции в статусе «Черновик».\nТекущий статус: "
+                    + FormatStatus(file.Status),
                     "Удаление",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -1365,20 +1496,19 @@ namespace AcadDwgBrowser.Plugin.Ui
         }
 
         private static bool IsDraftStatus(string? status) =>
-            NormalizeStatus(status) == "draft";
+            ContentStatusUi.Normalize(status) == "draft";
 
         private static bool IsRejectedStatus(string? status) =>
-            NormalizeStatus(status) == "rejected";
+            ContentStatusUi.Normalize(status) == "rejected";
 
-        private static string NormalizeStatus(string? status)
+        private static bool IsOnApprovalStatus(string? status)
         {
-            var s = (status ?? string.Empty).Trim().ToLowerInvariant();
-            if (s == "draft" || s == "черновик")
-                return "draft";
-            if (s == "rejected" || s == "отклонен" || s == "отклонён")
-                return "rejected";
-            return s;
+            var n = ContentStatusUi.Normalize(status);
+            return n == "pending" || n == "in_review";
         }
+
+        private static string FormatStatus(string? status) =>
+            ContentStatusUi.ToDisplayName(status);
 
         /// <summary>draft / rejected — можно смотреть и редактировать.</summary>
         private static bool CanEditContent(string? status) =>
@@ -1437,7 +1567,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     MessageBox.Show(
                         this,
-                        "Имя можно менять только в статусах «draft» и «rejected» через «Задать имя…».",
+                        "Имя можно менять только в статусах «Черновик» и «На доработку» через «Задать имя…».",
                         "Переименование",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -1558,7 +1688,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 MessageBox.Show(
                     this,
-                    "Выберите черновик/отклонённый в каталоге или откройте новый чертёж в AutoCAD.",
+                    "Выберите черновик или запись «На доработку» в каталоге или откройте новый чертёж в AutoCAD.",
                     "Переименование",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -1695,6 +1825,202 @@ namespace AcadDwgBrowser.Plugin.Ui
             }
         }
 
+        private DwgFileInfo? TryGetTargetFile(Func<string?, bool> statusMatches)
+        {
+            if (OpenDrawingRegistry.TryGetCurrent(out var current, out _)
+                && !string.IsNullOrWhiteSpace(current.Id)
+                && statusMatches(current.Status))
+            {
+                return current;
+            }
+
+            if (_list.SelectedItems.Count > 0
+                && _list.SelectedItems[0].Tag is DwgFileInfo selected
+                && !string.IsNullOrWhiteSpace(selected.Id)
+                && statusMatches(selected.Status))
+            {
+                return selected;
+            }
+
+            return null;
+        }
+
+        private void ApplyLocalStatus(DwgFileInfo file, string status)
+        {
+            file.Status = status;
+            var match = _allFiles.Find(f =>
+                string.Equals(f.Id, file.Id, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+                match.Status = status;
+            if (!string.IsNullOrWhiteSpace(file.LocalPath))
+                OpenDrawingRegistry.Register(file.LocalPath!, file);
+        }
+
+        private async Task WithdrawFromApprovalAsync()
+        {
+            if (_busy)
+                return;
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+            {
+                ShowLogin(true);
+                return;
+            }
+
+            var file = TryGetTargetFile(IsOnApprovalStatus);
+            if (file == null || string.IsNullOrWhiteSpace(file.Id))
+            {
+                MessageBox.Show(
+                    this,
+                    "Отзыв доступен только для чертежа на согласовании.",
+                    "Согласование",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            var name = ResolveKnownDisplayName(file);
+            var confirm = MessageBox.Show(
+                this,
+                "Отозвать «" + name + "» с согласования?\nЧертёж вернётся в черновики, текущие шаги и подписи будут удалены.",
+                "Отзыв с согласования",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2);
+            if (confirm != DialogResult.Yes)
+                return;
+
+            SetBusy(true, "Отзыв с согласования…");
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+
+            try
+            {
+                await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    await client.WithdrawApprovalAsync(file.Id, _cts.Token).ConfigureAwait(true);
+                }
+
+                ApplyLocalStatus(file, "draft");
+                AcadDocumentService.WriteMessage("Отозвано с согласования: " + name);
+                SetStatus("Отозвано с согласования: " + name);
+
+                await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
+                ApplyDisplayNameOverrides();
+                UpdateActiveLabel();
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Отменено");
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Ошибка: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Отзыв с согласования",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
+        private async Task ReplaceApproversAsync()
+        {
+            if (_busy)
+                return;
+            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+            {
+                ShowLogin(true);
+                return;
+            }
+
+            var file = TryGetTargetFile(IsOnApprovalStatus);
+            if (file == null || string.IsNullOrWhiteSpace(file.Id))
+            {
+                MessageBox.Show(
+                    this,
+                    "Замена согласующего доступна только для чертежа на согласовании.",
+                    "Согласование",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            SetBusy(true, "Загрузка согласующих…");
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+
+            try
+            {
+                await EnsureWriteSessionAsync(_cts.Token).ConfigureAwait(true);
+
+                IReadOnlyList<ContentApprovalStep> steps;
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    steps = await client.GetActiveApprovalPreviewAsync(file.Id, _cts.Token)
+                        .ConfigureAwait(true);
+                }
+
+                if (steps == null || steps.Count == 0)
+                {
+                    MessageBox.Show(
+                        this,
+                        "Нет незавершённых шагов: все согласующие уже приняли решение, или процесс недоступен.",
+                        "Замена согласующих",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                IReadOnlyList<UpdateApprovalAssigneesRequest> requests;
+                using (var dlg = ApprovalAssigneesDialog.Create(steps, ResolveKnownDisplayName(file)))
+                {
+                    var owner = FindForm() as IWin32Window ?? this;
+                    var dialogResult = dlg.ShowDialog(owner);
+                    if (dialogResult != DialogResult.OK || dlg.Result == null || dlg.Result.Count == 0)
+                    {
+                        SetStatus("Замена согласующих отменена");
+                        return;
+                    }
+
+                    requests = dlg.Result;
+                }
+
+                SetStatus("Обновление согласующих…");
+                using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
+                {
+                    foreach (var request in requests)
+                    {
+                        await client.UpdateApprovalAssigneesAsync(file.Id, request, _cts.Token)
+                            .ConfigureAwait(true);
+                    }
+                }
+
+                var name = ResolveKnownDisplayName(file);
+                AcadDocumentService.WriteMessage("Согласующие обновлены: " + name);
+                SetStatus("Согласующие обновлены: " + name);
+
+                await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
+                ApplyDisplayNameOverrides();
+                UpdateActiveLabel();
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Отменено");
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Ошибка: " + ex.Message);
+                MessageBox.Show(this, ex.Message, "Замена согласующих",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
         private async Task SaveActiveAsync()
         {
             if (_busy)
@@ -1723,7 +2049,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     MessageBox.Show(
                         this,
-                        "Редактирование недоступно для статуса «" + (file.Status ?? "—")
+                        "Редактирование недоступно для статуса «" + FormatStatus(file.Status)
                         + "». Доступен только просмотр.",
                         "Сохранение",
                         MessageBoxButtons.OK,
@@ -1736,7 +2062,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     MessageBox.Show(
                         this,
                         "Чертёж открыт в AutoCAD только для чтения.\n" +
-                        "Закройте его и откройте снова через каталог (статус draft/rejected).",
+                        "Закройте его и откройте снова через каталог (статус «Черновик» / «На доработку»).",
                         "Сохранение",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
@@ -1902,7 +2228,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     MessageBox.Show(
                         this,
-                        "Редактирование недоступно для статуса «" + (selectedFile.Status ?? "—") + "».",
+                        "Редактирование недоступно для статуса «" + FormatStatus(selectedFile.Status) + "».",
                         "Сохранение",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -2222,8 +2548,8 @@ namespace AcadDwgBrowser.Plugin.Ui
                 dialog.MinimizeBox = false;
                 dialog.MaximizeBox = false;
                 dialog.ShowInTaskbar = false;
-                dialog.ClientSize = new Size(360, 120);
-                dialog.Font = new Font("Segoe UI", 9f);
+                dialog.ClientSize = new Size(360, 128);
+                PluginTheme.ApplyForm(dialog);
 
                 var label = new Label
                 {
@@ -2232,6 +2558,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                     Top = 14,
                     AutoSize = true
                 };
+                PluginTheme.ApplyLabel(label, muted: true);
                 var box = new TextBox
                 {
                     Left = 12,
@@ -2239,22 +2566,25 @@ namespace AcadDwgBrowser.Plugin.Ui
                     Width = 336,
                     Text = currentName ?? string.Empty
                 };
+                PluginTheme.ApplyTextBox(box);
                 var ok = new Button
                 {
                     Text = "OK",
                     DialogResult = DialogResult.OK,
                     Left = 172,
-                    Top = 78,
+                    Top = 82,
                     Width = 84
                 };
+                PluginTheme.ApplyPrimaryButton(ok);
                 var cancel = new Button
                 {
                     Text = "Отмена",
                     DialogResult = DialogResult.Cancel,
                     Left = 264,
-                    Top = 78,
+                    Top = 82,
                     Width = 84
                 };
+                PluginTheme.ApplyGhostButton(cancel);
                 dialog.Controls.Add(label);
                 dialog.Controls.Add(box);
                 dialog.Controls.Add(ok);
@@ -2432,23 +2762,31 @@ namespace AcadDwgBrowser.Plugin.Ui
                 && !string.IsNullOrWhiteSpace(file.Id))
             {
                 var editable = CanEditContent(file.Status);
+                var onApproval = IsOnApprovalStatus(file.Status);
                 var displayName = ResolveKnownDisplayName(file);
                 if (_editorGroup != null && !_editorGroup.IsDisposed)
                 {
-                    _editorGroup.Text = editable
-                        ? "1. Редактирование из каталога (черновик / отклонён)"
-                        : "1. Просмотр из каталога (только чтение)";
+                    if (onApproval)
+                        _editorGroup.Text = "1. На согласовании — отзыв или замена согласующего";
+                    else
+                        _editorGroup.Text = editable
+                            ? "1. Редактирование из каталога (черновик / на доработку)"
+                            : "1. Просмотр из каталога (только чтение)";
                 }
 
-                _activeLabel.Text = editable
-                    ? "Из каталога: " + displayName + " [" + (file.Status ?? "—") + "]"
-                    : "Просмотр: " + displayName + " [" + (file.Status ?? "—") + "] — изменения недоступны";
+                if (onApproval)
+                    _activeLabel.Text = "На согласовании: " + displayName + " [" + FormatStatus(file.Status) + "]";
+                else if (editable)
+                    _activeLabel.Text = "Из каталога: " + displayName + " [" + FormatStatus(file.Status) + "]";
+                else
+                    _activeLabel.Text = "Просмотр: " + displayName + " [" + FormatStatus(file.Status) + "] — изменения недоступны";
                 SetNameBoxText(displayName);
                 // Имя меняется только через «Задать имя…» (draft / rejected).
                 SetNameBoxEditable(false);
                 _renameButton.Enabled = loggedIn && editable;
                 _saveButton.Enabled = loggedIn && editable;
                 _approveButton.Enabled = loggedIn && IsDraftStatus(file.Status);
+                SetOnApprovalActionsEnabled(loggedIn && onApproval);
                 _saveButton.Text = "Сохранить изменения";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy && editable);
@@ -2464,14 +2802,15 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 var displayName = ResolveKnownDisplayName(selected);
                 if (_editorGroup != null && !_editorGroup.IsDisposed)
-                    _editorGroup.Text = "1. Выбран из каталога (черновик / отклонён) — можно переименовать";
+                    _editorGroup.Text = "1. Выбран из каталога (черновик / на доработку) — можно переименовать";
 
-                _activeLabel.Text = "Выбрано в каталоге: " + displayName + " [" + (selected.Status ?? "—") + "]";
+                _activeLabel.Text = "Выбрано в каталоге: " + displayName + " [" + FormatStatus(selected.Status) + "]";
                 SetNameBoxText(displayName);
                 SetNameBoxEditable(false);
                 _renameButton.Enabled = loggedIn;
                 _saveButton.Enabled = loggedIn;
                 _approveButton.Enabled = loggedIn && IsDraftStatus(selected.Status);
+                SetOnApprovalActionsEnabled(false);
                 _saveButton.Text = "Сохранить изменения";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy);
@@ -2479,6 +2818,30 @@ namespace AcadDwgBrowser.Plugin.Ui
                     _ = EnsureLabelsLoadedAsync(selected);
                 else
                     ApplyLabelsToUi(selected.Labels);
+            }
+            else if (_list.SelectedItems.Count > 0
+                     && _list.SelectedItems[0].Tag is DwgFileInfo inReview
+                     && !string.IsNullOrWhiteSpace(inReview.Id)
+                     && IsOnApprovalStatus(inReview.Status))
+            {
+                var displayName = ResolveKnownDisplayName(inReview);
+                if (_editorGroup != null && !_editorGroup.IsDisposed)
+                    _editorGroup.Text = "1. Выбран из каталога (на согласовании)";
+
+                _activeLabel.Text = "На согласовании: " + displayName + " [" + FormatStatus(inReview.Status) + "]";
+                SetNameBoxText(displayName);
+                SetNameBoxEditable(false);
+                _renameButton.Enabled = false;
+                _saveButton.Enabled = false;
+                _approveButton.Enabled = false;
+                SetOnApprovalActionsEnabled(loggedIn);
+                _saveButton.Text = "Сохранить";
+                _renameButton.Text = "Задать имя…";
+                SetLabelCombosEnabled(false);
+                if (inReview.Labels == null)
+                    _ = EnsureLabelsLoadedAsync(inReview);
+                else
+                    ApplyLabelsToUi(inReview.Labels);
             }
             else if (hasDoc)
             {
@@ -2498,6 +2861,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _renameButton.Enabled = loggedIn;
                 _saveButton.Enabled = loggedIn;
                 _approveButton.Enabled = false;
+                SetOnApprovalActionsEnabled(false);
                 _saveButton.Text = "Сохранить в каталог";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(!_busy);
@@ -2512,11 +2876,20 @@ namespace AcadDwgBrowser.Plugin.Ui
                 _renameButton.Enabled = false;
                 _saveButton.Enabled = false;
                 _approveButton.Enabled = false;
+                SetOnApprovalActionsEnabled(false);
                 _saveButton.Text = "Сохранить";
                 _renameButton.Text = "Задать имя…";
                 SetLabelCombosEnabled(false);
                 ApplyLabelsToUi(null);
             }
+        }
+
+        private void SetOnApprovalActionsEnabled(bool enabled)
+        {
+            if (_withdrawButton != null && !_withdrawButton.IsDisposed)
+                _withdrawButton.Enabled = enabled;
+            if (_replaceAssigneesButton != null && !_replaceAssigneesButton.IsDisposed)
+                _replaceAssigneesButton.Enabled = enabled;
         }
 
         private string ResolveKnownDisplayName(DwgFileInfo file)
@@ -2586,7 +2959,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 return;
             _nameBox.ReadOnly = !editable;
             _nameBox.Enabled = true;
-            _nameBox.BackColor = editable ? SystemColors.Window : SystemColors.Control;
+            _nameBox.BackColor = editable ? PluginTheme.Card : PluginTheme.InputDisabled;
         }
 
         private void SetLabelCombosEnabled(bool enabled)
@@ -2631,13 +3004,15 @@ namespace AcadDwgBrowser.Plugin.Ui
                 if (!string.IsNullOrEmpty(query))
                 {
                     var hay = (file.Name + " " + file.ContentType + " " + file.Status + " "
-                               + file.Project + " " + file.RejectionComment + " " + file.Id);
+                               + FormatStatus(file.Status) + " " + file.Project + " "
+                               + file.RejectionComment + " " + file.Id);
                     if (hay.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0)
                         continue;
                 }
 
                 var item = new ListViewItem(file.Name);
-                item.SubItems.Add(file.Status ?? string.Empty);
+                var statusItem = item.SubItems.Add(FormatStatus(file.Status));
+                statusItem.Tag = file.Status ?? string.Empty;
                 item.SubItems.Add(file.Project ?? string.Empty);
                 item.SubItems.Add(
                     IsRejectedStatus(file.Status) ? (file.RejectionComment ?? string.Empty) : string.Empty);
@@ -3040,8 +3415,12 @@ namespace AcadDwgBrowser.Plugin.Ui
 
         private void SetLoginStatus(string text)
         {
-            if (IsHandleCreated && !IsDisposed)
-                _loginStatus.Text = text;
+            if (!IsHandleCreated || IsDisposed)
+                return;
+            _loginStatus.Text = text;
+            var error = (text ?? string.Empty).StartsWith("Ошибка", StringComparison.OrdinalIgnoreCase)
+                        || (text ?? string.Empty).IndexOf("истекла", StringComparison.OrdinalIgnoreCase) >= 0;
+            _loginStatus.ForeColor = error ? PluginTheme.Danger : PluginTheme.Muted;
         }
 
         private static string Short(string text)

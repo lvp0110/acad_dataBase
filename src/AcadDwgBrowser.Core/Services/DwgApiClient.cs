@@ -141,7 +141,8 @@ namespace AcadDwgBrowser.Core.Services
             if (string.IsNullOrWhiteSpace(status))
                 return false;
             var s = status.Trim().ToLowerInvariant();
-            return s == "rejected" || s == "отклонен" || s == "отклонён";
+            return s == "rejected" || s == "отклонен" || s == "отклонён"
+                || s == "на доработку" || s == "на доработке";
         }
 
         internal static string? ExtractRejectionComment(IEnumerable<ContentApprovalStep>? approvals)
@@ -767,7 +768,13 @@ namespace AcadDwgBrowser.Core.Services
             try
             {
                 var allUsers = await GetAllUsersAsync(cancellationToken).ConfigureAwait(false);
-                EnrichApprovalStepsWithDepartmentUsers(steps, allUsers);
+                foreach (var step in steps)
+                {
+                    if (step == null)
+                        continue;
+                    step.ApprovalUsers = MergeDepartmentUsers(
+                        step.DepartmentId, step.ApprovalUsers, allUsers, markNewAsWaiting: true);
+                }
             }
             catch (Exception ex)
             {
@@ -798,60 +805,59 @@ namespace AcadDwgBrowser.Core.Services
             }
         }
 
-        private static void EnrichApprovalStepsWithDepartmentUsers(
-            List<ApprovalPreviewStep> steps,
-            IReadOnlyList<UserFullInfo> allUsers)
+        private static List<ApprovalUser> MergeDepartmentUsers(
+            int departmentId,
+            List<ApprovalUser>? existingUsers,
+            IReadOnlyList<UserFullInfo> allUsers,
+            bool markNewAsWaiting)
         {
-            if (steps == null || steps.Count == 0 || allUsers == null || allUsers.Count == 0)
-                return;
-
-            foreach (var step in steps)
+            var byId = new Dictionary<string, ApprovalUser>(StringComparer.OrdinalIgnoreCase);
+            foreach (var existing in existingUsers ?? new List<ApprovalUser>())
             {
-                if (step == null || step.DepartmentId <= 0)
+                if (existing == null || string.IsNullOrWhiteSpace(existing.UserId))
                     continue;
+                byId[existing.UserId.Trim()] = existing;
+            }
 
-                var byId = new Dictionary<string, ApprovalUser>(StringComparer.OrdinalIgnoreCase);
-                foreach (var existing in step.ApprovalUsers ?? new List<ApprovalUser>())
-                {
-                    if (existing == null || string.IsNullOrWhiteSpace(existing.UserId))
-                        continue;
-                    byId[existing.UserId.Trim()] = existing;
-                }
-
-                foreach (var user in allUsers)
-                {
-                    if (user == null || string.IsNullOrWhiteSpace(user.UserId))
-                        continue;
-                    if (user.DepartmentId != step.DepartmentId)
-                        continue;
-                    if (user.IsActive == false)
-                        continue;
-
-                    var id = user.UserId!.Trim();
-                    if (byId.ContainsKey(id))
-                    {
-                        // Keep preview entry but fill empty name/position from catalog.
-                        var prev = byId[id];
-                        if (string.IsNullOrWhiteSpace(prev.FullName))
-                            prev.FullName = user.DisplayName;
-                        if (string.IsNullOrWhiteSpace(prev.Position))
-                            prev.Position = user.PositionType ?? string.Empty;
-                        continue;
-                    }
-
-                    byId[id] = new ApprovalUser
-                    {
-                        UserId = id,
-                        FullName = user.DisplayName,
-                        Position = user.PositionType ?? string.Empty,
-                        Action = "waiting"
-                    };
-                }
-
-                step.ApprovalUsers = byId.Values
+            if (departmentId <= 0 || allUsers == null || allUsers.Count == 0)
+            {
+                return byId.Values
                     .OrderBy(u => u.FullName ?? u.UserId, StringComparer.CurrentCultureIgnoreCase)
                     .ToList();
             }
+
+            foreach (var user in allUsers)
+            {
+                if (user == null || string.IsNullOrWhiteSpace(user.UserId))
+                    continue;
+                if (user.DepartmentId != departmentId)
+                    continue;
+                if (user.IsActive == false)
+                    continue;
+
+                var id = user.UserId!.Trim();
+                if (byId.ContainsKey(id))
+                {
+                    var prev = byId[id];
+                    if (string.IsNullOrWhiteSpace(prev.FullName))
+                        prev.FullName = user.DisplayName;
+                    if (string.IsNullOrWhiteSpace(prev.Position))
+                        prev.Position = user.PositionType ?? string.Empty;
+                    continue;
+                }
+
+                byId[id] = new ApprovalUser
+                {
+                    UserId = id,
+                    FullName = user.DisplayName,
+                    Position = user.PositionType ?? string.Empty,
+                    Action = markNewAsWaiting ? "waiting" : null
+                };
+            }
+
+            return byId.Values
+                .OrderBy(u => u.FullName ?? u.UserId, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
         }
 
         public async Task StartApprovalAsync(
@@ -875,6 +881,113 @@ namespace AcadDwgBrowser.Core.Services
                 var status = (int)response.StatusCode;
                 var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                 AuthDebugLog.Write("Start approval HTTP " + status + " body=" + Truncate(body));
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException(ExtractErrorMessage(body, status));
+                EnsureApiSuccess(body);
+            }
+        }
+
+        public async Task<IReadOnlyList<ContentApprovalStep>> GetActiveApprovalPreviewAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                throw new ArgumentException("Id контента пуст.", nameof(contentId));
+
+            var endpoint = _settings.BuildApprovalActivePreviewUrl(contentId);
+            List<ContentApprovalStep> steps;
+            using (var response = await _http.GetAsync(endpoint, cancellationToken).ConfigureAwait(false))
+            {
+                await EnsureOkAsync(response).ConfigureAwait(false);
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var payload = JsonSerializer.Deserialize<ApprovalStepsResponse>(json, JsonOptions)
+                              ?? new ApprovalStepsResponse();
+                if (payload.Code >= 400)
+                    throw new InvalidOperationException(payload.Error ?? "Ошибка активного согласования.");
+                steps = payload.Data ?? new List<ContentApprovalStep>();
+            }
+
+            foreach (var step in steps)
+            {
+                if (step == null)
+                    continue;
+                step.PendingAssigneeIds = (step.ApprovalUsers ?? new List<ApprovalUser>())
+                    .Where(u => u != null && !string.IsNullOrWhiteSpace(u.UserId))
+                    .Select(u => u.UserId.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            try
+            {
+                var allUsers = await GetAllUsersAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var step in steps)
+                {
+                    if (step == null)
+                        continue;
+                    step.ApprovalUsers = MergeDepartmentUsers(
+                        step.DepartmentId, step.ApprovalUsers, allUsers, markNewAsWaiting: false);
+                }
+            }
+            catch (Exception ex)
+            {
+                AuthDebugLog.Write("Enrich active approval users from /content/users/all: " + ex.Message);
+            }
+
+            AuthDebugLog.Write(
+                "Active approval preview " + contentId + ": steps=" + steps.Count + " users=[" +
+                string.Join("; ", steps.Select(s =>
+                    "step" + s.StepOrder + "=" + (s.ApprovalUsers?.Count ?? 0)
+                    + "/pending=" + (s.PendingAssigneeIds?.Count ?? 0))) + "]");
+
+            return steps;
+        }
+
+        public async Task UpdateApprovalAssigneesAsync(
+            string contentId,
+            UpdateApprovalAssigneesRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                throw new ArgumentException("Id контента пуст.", nameof(contentId));
+            if (request == null || string.IsNullOrWhiteSpace(request.ProcessStepId))
+                throw new ArgumentException("Не указан шаг согласования.", nameof(request));
+            if (request.UserIds == null || request.UserIds.Count == 0)
+                throw new ArgumentException("Не выбраны согласующие.", nameof(request));
+
+            var endpoint = _settings.BuildApprovalAssigneesUrl(contentId);
+            var jsonBody = JsonSerializer.Serialize(request, JsonOptions);
+            AuthDebugLog.Write("PUT " + endpoint + " body=" + Truncate(jsonBody));
+
+            using (var content = new StringContent(jsonBody, Encoding.UTF8, "application/json"))
+            using (var requestMessage = new HttpRequestMessage(HttpMethod.Put, endpoint) { Content = content })
+            using (var response = await _http.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false))
+            {
+                var status = (int)response.StatusCode;
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                AuthDebugLog.Write("Update assignees HTTP " + status + " body=" + Truncate(body));
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException(ExtractErrorMessage(body, status));
+                EnsureApiSuccess(body);
+            }
+        }
+
+        public async Task WithdrawApprovalAsync(
+            string contentId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(contentId))
+                throw new ArgumentException("Id контента пуст.", nameof(contentId));
+
+            var endpoint = _settings.BuildContentWithdrawUrl(contentId);
+            AuthDebugLog.Write("PUT " + endpoint);
+
+            using (var requestMessage = new HttpRequestMessage(HttpMethod.Put, endpoint))
+            using (var response = await _http.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false))
+            {
+                var status = (int)response.StatusCode;
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                AuthDebugLog.Write("Withdraw approval HTTP " + status + " body=" + Truncate(body));
                 if (!response.IsSuccessStatusCode)
                     throw new InvalidOperationException(ExtractErrorMessage(body, status));
                 EnsureApiSuccess(body);

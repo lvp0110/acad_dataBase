@@ -149,6 +149,15 @@ namespace AcadDwgBrowser.Core.Configuration
         /// <summary>POST — swagger /content/toApproval/{id}</summary>
         public string ApprovalStartPath { get; set; } = "/content/toApproval/{id}";
 
+        /// <summary>GET — swagger /content/toApproval/active-preview/{id}</summary>
+        public string ApprovalActivePreviewPath { get; set; } = "/content/toApproval/active-preview/{id}";
+
+        /// <summary>PUT — swagger /content/toApproval/assignees/{id}</summary>
+        public string ApprovalAssigneesPath { get; set; } = "/content/toApproval/assignees/{id}";
+
+        /// <summary>PUT — swagger /content/withdraw/{id}</summary>
+        public string ContentWithdrawPath { get; set; } = "/content/withdraw/{id}";
+
         public string BuildContentFiltersUrl(string? code = null) =>
             (ContentFiltersPath ?? "/content/filters/{code}")
                 .Replace("{code}", Uri.EscapeDataString(code ?? ResolveContentType()))
@@ -196,6 +205,21 @@ namespace AcadDwgBrowser.Core.Configuration
 
         public string BuildApprovalStartUrl(string contentId) =>
             (ApprovalStartPath ?? "/content/toApproval/{id}")
+                .Replace("{id}", Uri.EscapeDataString(contentId ?? string.Empty))
+                .TrimStart('/');
+
+        public string BuildApprovalActivePreviewUrl(string contentId) =>
+            (ApprovalActivePreviewPath ?? "/content/toApproval/active-preview/{id}")
+                .Replace("{id}", Uri.EscapeDataString(contentId ?? string.Empty))
+                .TrimStart('/');
+
+        public string BuildApprovalAssigneesUrl(string contentId) =>
+            (ApprovalAssigneesPath ?? "/content/toApproval/assignees/{id}")
+                .Replace("{id}", Uri.EscapeDataString(contentId ?? string.Empty))
+                .TrimStart('/');
+
+        public string BuildContentWithdrawUrl(string contentId) =>
+            (ContentWithdrawPath ?? "/content/withdraw/{id}")
                 .Replace("{id}", Uri.EscapeDataString(contentId ?? string.Empty))
                 .TrimStart('/');
 

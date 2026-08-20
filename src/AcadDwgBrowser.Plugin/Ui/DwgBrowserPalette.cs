@@ -24,10 +24,11 @@ namespace AcadDwgBrowser.Plugin.Ui
                 {
                     Style = PaletteSetStyles.ShowAutoHideButton
                             | PaletteSetStyles.ShowCloseButton
-                            | PaletteSetStyles.ShowPropertiesMenu,
-                    MinimumSize = new Size(360, 420),
-                    DockEnabled = DockSides.Left | DockSides.Right,
-                    Size = new Size(420, 640)
+                            | PaletteSetStyles.ShowPropertiesMenu
+                            | PaletteSetStyles.Snappable,
+                    MinimumSize = new Size(320, 420),
+                    DockEnabled = DockSides.Left | DockSides.Right | DockSides.None,
+                    Size = new Size(400, 720)
                 };
                 _palette.Add(DisplayName, _control);
             }
