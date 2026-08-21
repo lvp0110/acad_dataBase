@@ -202,29 +202,6 @@ namespace AcadDwgBrowser.Core.Models
 
             return labels.HasAnyValue ? labels : null;
         }
-
-        /// <summary>
-        /// Fallback catalog title from label codes when ConstrTodo does not return payload.code.
-        /// </summary>
-        public string BuildAutoCode()
-        {
-            var parts = new[]
-            {
-                BrandCode,
-                ModelCode,
-                PanelSizeCode,
-                PerforationCode,
-                EdgeCode
-            };
-            var filled = new List<string>();
-            foreach (var part in parts)
-            {
-                if (!string.IsNullOrWhiteSpace(part))
-                    filled.Add(part.Trim());
-            }
-
-            return filled.Count == 0 ? string.Empty : string.Join("_", filled);
-        }
     }
 
     /// <summary>POST /content/production-drawings/sizes — same as web PanelSizeCreate.</summary>
