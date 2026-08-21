@@ -1337,22 +1337,27 @@ namespace AcadDwgBrowser.Core.Services
         }
 
         public async Task<DwgFileInfo> CreateContentAsync(
-            string name,
+            string? name,
             string localDwgPath,
             ProductionDrawingLabels labels,
             string? dwgFieldCode = null,
             IProgress<double>? progress = null,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentException("Имя чертежа пусто.", nameof(name));
             if (string.IsNullOrWhiteSpace(localDwgPath) || !File.Exists(localDwgPath))
                 throw new FileNotFoundException("Локальный DWG не найден.", localDwgPath);
             if (labels == null || !labels.IsComplete)
                 throw new InvalidOperationException(
                     "Заполните все обязательные метки: " + (labels?.MissingFieldName() ?? "метки"));
 
-            name = name.Trim();
+            name = string.IsNullOrWhiteSpace(name) ? null : name!.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+                name = labels.BuildAutoCode();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException(
+                    "Не удалось сформировать имя чертежа по меткам.");
+
+            var catalogName = name!.Trim();
             var fieldCode = string.IsNullOrWhiteSpace(dwgFieldCode) ? "file_dwg" : dwgFieldCode!.Trim();
             try
             {
@@ -1368,7 +1373,7 @@ namespace AcadDwgBrowser.Core.Services
             var endpoint = _settings.BuildContentCreateUrl();
             progress?.Report(0.05);
 
-            var fileName = MakeSafeDwgFileName(name, null);
+            var fileName = MakeSafeDwgFileName(catalogName, null);
             if (string.IsNullOrWhiteSpace(fileName))
                 fileName = "drawing.dwg";
 
@@ -1381,8 +1386,12 @@ namespace AcadDwgBrowser.Core.Services
                 void AddField(string key, string value) =>
                     form.Add(new StringContent(value ?? string.Empty, Encoding.UTF8), key);
 
-                AddField("code", name);
-                AddField("name", name);
+                // ConstrTodo stores the title in payload.code. Never send AutoCAD
+                // placeholders (Чертеж1): if the caller omitted a name, we already
+                // filled it from labels via BuildAutoCode().
+                AddField("code", catalogName);
+                AddField("name", catalogName);
+
                 AddField("user_uuid", labels.UserUuid);
                 AddField("brand_code", labels.BrandCode);
                 AddField("model_code", labels.ModelCode);
@@ -1391,13 +1400,19 @@ namespace AcadDwgBrowser.Core.Services
                 AddField("prod_drawing_panel_size_code", labels.PanelSizeCode);
                 AddField("prod_drawing_perforation_code", labels.PerforationCode);
 
+                var payloadJson = BuildCreatePayloadJson(catalogName, labels);
+                form.Add(new StringContent(payloadJson, Encoding.UTF8), "payload");
+
                 var fileContent = new ByteArrayContent(bytes);
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 form.Add(fileContent, fieldCode, fileName);
 
                 progress?.Report(0.45);
 
-                AuthDebugLog.Write("POST " + endpoint + " code=" + name + " field=" + fieldCode);
+                AuthDebugLog.Write(
+                    "POST " + endpoint + " code=" + catalogName
+                    + " field=" + fieldCode
+                    + " payload=" + Truncate(payloadJson));
 
                 using (var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = form })
                 using (var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false))
@@ -1414,21 +1429,71 @@ namespace AcadDwgBrowser.Core.Services
 
             progress?.Report(0.85);
 
-            var createdId = TryExtractCreatedId(body);
-            if (string.IsNullOrWhiteSpace(createdId))
+            TryParseCreatedResponse(body, out var createdId, out var createdName);
+            if (string.IsNullOrWhiteSpace(createdName))
+                createdName = catalogName;
+
+            if (!string.IsNullOrWhiteSpace(createdId))
+            {
+                try
+                {
+                    var detail = await GetContentAsync(createdId!, cancellationToken).ConfigureAwait(false);
+                    var fromDetail = TryResolveCreatedDisplayName(detail, createdName);
+                    if (!string.IsNullOrWhiteSpace(fromDetail))
+                        createdName = fromDetail;
+                }
+                catch (Exception ex)
+                {
+                    AuthDebugLog.Write("Create content: GET name failed: " + ex.Message);
+                }
+
+                if (string.IsNullOrWhiteSpace(createdName)
+                    || !IsStableDisplayName(SanitizeDisplayName(createdName)))
+                {
+                    if (!string.IsNullOrWhiteSpace(catalogName) && !string.IsNullOrWhiteSpace(createdId))
+                    {
+                        AuthDebugLog.Write(
+                            "Create content: payload.code empty, PUT fallback code=" + catalogName);
+                        try
+                        {
+                            await PutContentMetaAsync(
+                                    createdId!,
+                                    catalogName,
+                                    labels,
+                                    fieldCode,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                            createdName = catalogName;
+                        }
+                        catch (Exception ex)
+                        {
+                            AuthDebugLog.Write("Create content: PUT fallback name failed: " + ex.Message);
+                            createdName = catalogName;
+                        }
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(createdId) && !string.IsNullOrWhiteSpace(createdName))
             {
                 var list = await ListFilesAsync(cancellationToken).ConfigureAwait(false);
                 var match = list.FirstOrDefault(f =>
-                    string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
+                    string.Equals(f.Name, createdName, StringComparison.OrdinalIgnoreCase));
                 createdId = match?.Id;
+                if (match != null && IsStableDisplayName(SanitizeDisplayName(match.Name)))
+                    createdName = match.Name;
             }
 
             progress?.Report(1.0);
 
+            AuthDebugLog.Write(
+                "Create content resolved id=" + (createdId ?? "")
+                + " name=" + (createdName ?? ""));
+
             return new DwgFileInfo
             {
                 Id = createdId ?? string.Empty,
-                Name = name,
+                Name = createdName ?? string.Empty,
                 LocalPath = localDwgPath,
                 DwgFieldCode = fieldCode,
                 ContentType = _settings.ResolveContentType(),
@@ -1489,8 +1554,16 @@ namespace AcadDwgBrowser.Core.Services
 
         private static string? TryExtractCreatedId(string body)
         {
+            TryParseCreatedResponse(body, out var id, out _);
+            return id;
+        }
+
+        private static void TryParseCreatedResponse(string body, out string? id, out string? name)
+        {
+            id = null;
+            name = null;
             if (string.IsNullOrWhiteSpace(body))
-                return null;
+                return;
 
             try
             {
@@ -1498,25 +1571,13 @@ namespace AcadDwgBrowser.Core.Services
                 {
                     var root = doc.RootElement;
                     if (!root.TryGetProperty("data", out var data))
-                        return null;
+                        return;
 
-                    if (data.ValueKind == JsonValueKind.String)
+                    ExtractCreatedIdAndName(data, ref id, ref name);
+                    if (data.ValueKind == JsonValueKind.Object
+                        && data.TryGetProperty("payload", out var payload))
                     {
-                        var s = data.GetString();
-                        return IsUuid(s) ? s : null;
-                    }
-
-                    if (data.ValueKind == JsonValueKind.Object)
-                    {
-                        if (data.TryGetProperty("content_id", out var contentId)
-                            && contentId.ValueKind == JsonValueKind.String)
-                            return contentId.GetString();
-
-                        if (data.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
-                        {
-                            var s = id.GetString();
-                            return IsUuid(s) ? s : s;
-                        }
+                        ExtractCreatedIdAndName(payload, ref id, ref name);
                     }
                 }
             }
@@ -1524,8 +1585,76 @@ namespace AcadDwgBrowser.Core.Services
             {
                 // ignore
             }
+        }
 
-            return null;
+        private static void ExtractCreatedIdAndName(JsonElement el, ref string? id, ref string? name)
+        {
+            if (el.ValueKind == JsonValueKind.String)
+            {
+                var s = el.GetString();
+                if (id == null && IsUuid(s))
+                    id = s;
+                return;
+            }
+
+            if (el.ValueKind != JsonValueKind.Object)
+                return;
+
+            if (id == null)
+            {
+                if (el.TryGetProperty("content_id", out var contentId)
+                    && contentId.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(contentId.GetString()))
+                {
+                    id = contentId.GetString();
+                }
+                else if (el.TryGetProperty("id", out var idEl)
+                         && idEl.ValueKind == JsonValueKind.String)
+                {
+                    var s = idEl.GetString();
+                    if (!string.IsNullOrWhiteSpace(s))
+                        id = s;
+                }
+            }
+
+            foreach (var key in new[] { "code", "name" })
+            {
+                if (!el.TryGetProperty(key, out var n) || n.ValueKind != JsonValueKind.String)
+                    continue;
+                var cleaned = SanitizeDisplayName(n.GetString());
+                if (!IsStableDisplayName(cleaned))
+                    continue;
+                // Prefer payload.code (first stable "code") over "name".
+                if (name == null || string.Equals(key, "code", StringComparison.OrdinalIgnoreCase))
+                    name = cleaned;
+                if (string.Equals(key, "code", StringComparison.OrdinalIgnoreCase))
+                    break;
+            }
+        }
+
+        private static string? TryResolveCreatedDisplayName(ContentFullInfo detail, string? preferred)
+        {
+            if (detail == null)
+                return preferred;
+
+            try
+            {
+                return ResolveStableContentName(detail, preferred, detail.Id);
+            }
+            catch
+            {
+                string? payloadCode = null;
+                if (detail.Payload.ValueKind == JsonValueKind.Object
+                    && detail.Payload.TryGetProperty("code", out var codeEl)
+                    && codeEl.ValueKind == JsonValueKind.String)
+                {
+                    payloadCode = codeEl.GetString();
+                }
+
+                return SanitizeDisplayName(payloadCode)
+                       ?? SanitizeDisplayName(detail.Name)
+                       ?? SanitizeDisplayName(preferred);
+            }
         }
 
         private static bool IsUuid(string? value) =>
@@ -1628,6 +1757,28 @@ namespace AcadDwgBrowser.Core.Services
                 return pick!.FieldCode!;
 
             return "file_dwg";
+        }
+
+        private static string BuildCreatePayloadJson(string? name, ProductionDrawingLabels labels)
+        {
+            var root = new JsonObject
+            {
+                ["user_uuid"] = labels.UserUuid,
+                ["brand_code"] = labels.BrandCode,
+                ["model_code"] = labels.ModelCode,
+                ["global_category_code"] = labels.GlobalCategoryCode,
+                ["prod_drawing_edge_code"] = labels.EdgeCode,
+                ["prod_drawing_panel_size_code"] = labels.PanelSizeCode,
+                ["prod_drawing_perforation_code"] = labels.PerforationCode
+            };
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                var exact = name!.Trim();
+                root["code"] = exact;
+                root["name"] = exact;
+            }
+
+            return root.ToJsonString();
         }
 
         private static string BuildUpdatePayloadJson(

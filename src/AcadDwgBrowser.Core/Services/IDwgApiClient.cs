@@ -83,9 +83,11 @@ namespace AcadDwgBrowser.Core.Services
 
         /// <summary>
         /// Creates new content via POST /content/{code} with DWG file and required labels.
+        /// Name/code is optional: the catalog generates it when omitted.
+        /// The returned <see cref="DwgFileInfo.Name"/> is the catalog-assigned title.
         /// </summary>
         Task<DwgFileInfo> CreateContentAsync(
-            string name,
+            string? name,
             string localDwgPath,
             ProductionDrawingLabels labels,
             string? dwgFieldCode = null,
