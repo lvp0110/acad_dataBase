@@ -326,7 +326,7 @@ namespace AcadDwgBrowser.Plugin.Ui
             nameRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             nameRow.Controls.Add(new Label
             {
-                Text = "Имя чертежа *",
+                Text = "Имя чертежа",
                 Dock = DockStyle.Fill,
                 Font = PluginTheme.CaptionFont,
                 ForeColor = PluginTheme.Muted,
@@ -2389,29 +2389,9 @@ namespace AcadDwgBrowser.Plugin.Ui
                 return;
             }
 
-            string suggested;
-            try
-            {
-                suggested = RequireEditorName();
-            }
-            catch (Exception ex)
-            {
-                var named = PromptName(
-                    OpenDrawingRegistry.PendingNewName
-                    ?? AcadDocumentService.TryGetActiveDocumentTitle()
-                    ?? "Новый чертёж");
-                if (named == null)
-                {
-                    MessageBox.Show(this, ex.Message, "Сохранение нового чертежа",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                suggested = named;
-                SetNameBoxText(suggested);
-            }
-
-            OpenDrawingRegistry.PendingNewName = suggested;
+            // Имя не отправляем: ConstrTodo назначает payload.code сам.
+            OpenDrawingRegistry.PendingNewName = null;
+            SetNameBoxText(string.Empty, force: true);
 
             SetBusy(true, "Сохранение нового чертежа…");
             _cts?.Cancel();
@@ -2422,7 +2402,8 @@ namespace AcadDwgBrowser.Plugin.Ui
             {
                 var destDir = PluginApp.Settings.ResolveDownloadDirectory();
                 Directory.CreateDirectory(destDir);
-                var localPath = BuildCatalogLocalPath(destDir, suggested, null);
+                var localHint = AcadDocumentService.TryGetActiveDocumentTitle() ?? "drawing";
+                var localPath = BuildCatalogLocalPath(destDir, localHint, null);
                 localPath = AcadDocumentService.SaveActiveDocumentAs(localPath);
 
                 SetStatus("Создание в каталоге…");
@@ -2437,7 +2418,7 @@ namespace AcadDwgBrowser.Plugin.Ui
                 using (var client = new DwgApiClient(PluginApp.Settings, PluginApp.Session))
                 {
                     created = await client.CreateContentAsync(
-                            suggested,
+                            name: null,
                             localPath,
                             labels,
                             dwgFieldCode: null,
@@ -2448,53 +2429,48 @@ namespace AcadDwgBrowser.Plugin.Ui
 
                 created.LocalPath = localPath;
                 created.Status = "draft";
-                created.Name = suggested;
                 created.Labels = labels.Clone();
-                RememberDisplayName(created.Id, suggested);
-                if (!string.IsNullOrWhiteSpace(created.Id))
-                    OpenDrawingRegistry.Register(localPath, created);
-                OpenDrawingRegistry.PendingNewName = null;
-                AcadDocumentService.WriteMessage("Новый чертёж сохранён как черновик: " + suggested);
 
                 await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
-                ApplyDisplayNameOverrides();
 
                 var match = !string.IsNullOrWhiteSpace(created.Id)
                     ? _allFiles.Find(f =>
                         string.Equals(f.Id, created.Id, StringComparison.OrdinalIgnoreCase))
                     : null;
-                match ??= _allFiles.Find(f =>
-                    string.Equals(f.Name, suggested, StringComparison.OrdinalIgnoreCase));
+
                 if (match != null)
                 {
-                    match.Name = suggested;
+                    if (IsUsableCatalogName(match.Name))
+                        created.Name = match.Name;
+                    else if (IsUsableCatalogName(created.Name))
+                        match.Name = created.Name;
                     match.LocalPath = localPath;
                     match.DwgFieldCode = created.DwgFieldCode;
                     match.Status = string.IsNullOrWhiteSpace(match.Status) ? "draft" : match.Status;
                     match.Labels = labels.Clone();
-                    RememberDisplayName(match.Id, suggested);
-                    OpenDrawingRegistry.Register(localPath, match);
-                    var activePath = AcadDocumentService.TryGetActiveDocumentPath();
-                    if (!string.IsNullOrWhiteSpace(activePath))
-                        OpenDrawingRegistry.Register(activePath!, match);
-                    SetStatus("Создано в каталоге (черновик): " + suggested);
+                    created = match;
                 }
                 else if (!string.IsNullOrWhiteSpace(created.Id))
                 {
                     _allFiles.Insert(0, created);
-                    ApplyFilter();
-                    OpenDrawingRegistry.Register(localPath, created);
-                    var activePath = AcadDocumentService.TryGetActiveDocumentPath();
-                    if (!string.IsNullOrWhiteSpace(activePath))
-                        OpenDrawingRegistry.Register(activePath!, created);
-                    SetStatus("Создано в каталоге (черновик): " + suggested);
-                }
-                else
-                {
-                    SetStatus("Создано в каталоге (черновик): " + suggested + " — обновите список");
                 }
 
-                SetNameBoxText(suggested);
+                if (IsUsableCatalogName(created.Name))
+                    RememberDisplayName(created.Id, created.Name);
+                ApplyDisplayNameOverrides();
+
+                localPath = TryRenameLocalToCatalogName(destDir, localPath, created);
+                created.LocalPath = localPath;
+
+                if (!string.IsNullOrWhiteSpace(created.Id))
+                    OpenDrawingRegistry.Register(localPath, created);
+                var activePath = AcadDocumentService.TryGetActiveDocumentPath();
+                if (!string.IsNullOrWhiteSpace(activePath))
+                    OpenDrawingRegistry.Register(activePath!, created);
+
+                var shown = IsUsableCatalogName(created.Name) ? created.Name : "имя назначит ConstrTodo";
+                AcadDocumentService.WriteMessage("Новый чертёж сохранён как черновик: " + shown);
+                SetStatus("Создано в каталоге (черновик): " + shown);
                 ApplyFilter();
                 UpdateActiveLabel();
             }
@@ -2846,19 +2822,12 @@ namespace AcadDwgBrowser.Plugin.Ui
             else if (hasDoc)
             {
                 if (_editorGroup != null && !_editorGroup.IsDisposed)
-                    _editorGroup.Text = "1. Новый чертёж — имя, метки, сохранить как черновик";
+                    _editorGroup.Text = "1. Новый чертёж — метки, сохранить как черновик";
 
-                _activeLabel.Text = "Новый чертёж AutoCAD → будет добавлен в каталог как черновик";
-                if (_nameBox != null && !_nameBox.IsDisposed && !_nameBox.Focused)
-                {
-                    if (!string.IsNullOrWhiteSpace(OpenDrawingRegistry.PendingNewName))
-                        SetNameBoxText(OpenDrawingRegistry.PendingNewName);
-                    else
-                        SetNameBoxText(AcadDocumentService.TryGetActiveDocumentTitle() ?? string.Empty);
-                }
-
+                _activeLabel.Text = "Новый чертёж AutoCAD → имя назначит ConstrTodo при сохранении";
+                SetNameBoxText(string.Empty);
                 SetNameBoxEditable(false);
-                _renameButton.Enabled = loggedIn;
+                _renameButton.Enabled = false;
                 _saveButton.Enabled = loggedIn;
                 _approveButton.Enabled = false;
                 SetOnApprovalActionsEnabled(false);
@@ -2932,19 +2901,47 @@ namespace AcadDwgBrowser.Plugin.Ui
             return string.IsNullOrWhiteSpace(t) ? null : t;
         }
 
-        private string RequireEditorName()
+        private static bool IsUsableCatalogName(string? value)
         {
-            var name = GetEditorNameOrNull();
-            if (string.IsNullOrWhiteSpace(name))
-                throw new InvalidOperationException("Укажите имя чертежа в поле «Имя чертежа».");
-            return name!;
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+            var s = value.Trim();
+            if (s.StartsWith("Без имени", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (s.StartsWith("tmp-", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return true;
         }
 
-        private void SetNameBoxText(string? text)
+        private string TryRenameLocalToCatalogName(string destDir, string localPath, DwgFileInfo created)
+        {
+            if (!IsUsableCatalogName(created.Name))
+                return localPath;
+
+            try
+            {
+                var wanted = BuildCatalogLocalPath(destDir, created.Name, created.Id);
+                if (string.Equals(
+                        Path.GetFullPath(localPath),
+                        Path.GetFullPath(wanted),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return localPath;
+                }
+
+                return AcadDocumentService.SaveActiveDocumentAs(wanted);
+            }
+            catch
+            {
+                return localPath;
+            }
+        }
+
+        private void SetNameBoxText(string? text, bool force = false)
         {
             if (_nameBox == null || _nameBox.IsDisposed)
                 return;
-            if (_nameBox.Focused)
+            if (_nameBox.Focused && !force)
                 return;
             _nameBox.Text = text ?? string.Empty;
         }

@@ -83,9 +83,10 @@ namespace AcadDwgBrowser.Core.Services
 
         /// <summary>
         /// Creates new content via POST /content/{code} with DWG file and required labels.
+        /// Name is optional: omit it so ConstrTodo assigns payload.code, then read it back.
         /// </summary>
         Task<DwgFileInfo> CreateContentAsync(
-            string name,
+            string? name,
             string localDwgPath,
             ProductionDrawingLabels labels,
             string? dwgFieldCode = null,
