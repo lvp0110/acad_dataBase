@@ -51,6 +51,28 @@ namespace AcadDwgBrowser.Core.Models
         }
     }
 
+    /// <summary>models.UserCredentials from swagger — POST /auth/login and POST /auth/refresh.</summary>
+    public sealed class UserCredentials
+    {
+        [JsonPropertyName("access_token")]
+        public string? AccessToken { get; set; }
+
+        [JsonPropertyName("refresh_token")]
+        public string? RefreshToken { get; set; }
+
+        [JsonPropertyName("token_type")]
+        public string? TokenType { get; set; }
+
+        [JsonPropertyName("expires_at")]
+        public string? ExpiresAt { get; set; }
+
+        [JsonPropertyName("refresh_expires_at")]
+        public string? RefreshExpiresAt { get; set; }
+
+        [JsonPropertyName("user")]
+        public UserFullInfo? User { get; set; }
+    }
+
     /// <summary>swagger.UsersListsResponse</summary>
     public sealed class UsersListsResponse
     {

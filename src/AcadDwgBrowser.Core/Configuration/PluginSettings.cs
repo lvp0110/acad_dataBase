@@ -7,17 +7,20 @@ namespace AcadDwgBrowser.Core.Configuration
     {
         public string ApiBaseUrl { get; set; } = "https://dev3.constrtodo.ru:3005";
 
-        /// <summary>Optional static Bearer token (bypass UI login). Prefer POST /login session.</summary>
+        /// <summary>Optional static Bearer token (bypass UI login). Prefer POST /auth/login session.</summary>
         public string ApiKey { get; set; } = string.Empty;
 
-        /// <summary>POST — swagger /login</summary>
-        public string LoginEndpoint { get; set; } = "/login";
+        /// <summary>POST — swagger /auth/login</summary>
+        public string LoginEndpoint { get; set; } = "/auth/login";
 
         /// <summary>GET — swagger /auth/session</summary>
         public string SessionEndpoint { get; set; } = "/auth/session";
 
         /// <summary>POST — swagger /auth/logout</summary>
         public string LogoutEndpoint { get; set; } = "/auth/logout";
+
+        /// <summary>POST — swagger /auth/refresh</summary>
+        public string RefreshEndpoint { get; set; } = "/auth/refresh";
 
         /// <summary>
         /// Fixed content type: production drawings only (models.DocumentsType.production_drawings).
@@ -85,6 +88,23 @@ namespace AcadDwgBrowser.Core.Configuration
 
         public string ResolveContentType() =>
             string.IsNullOrWhiteSpace(ContentType) ? "production_drawings" : ContentType.Trim();
+
+        /// <summary>Maps legacy /login to swagger /auth/login and fills missing auth paths.</summary>
+        public void NormalizeAuthEndpoints()
+        {
+            if (string.IsNullOrWhiteSpace(LoginEndpoint)
+                || string.Equals(LoginEndpoint.Trim(), "/login", StringComparison.OrdinalIgnoreCase))
+            {
+                LoginEndpoint = "/auth/login";
+            }
+
+            if (string.IsNullOrWhiteSpace(SessionEndpoint))
+                SessionEndpoint = "/auth/session";
+            if (string.IsNullOrWhiteSpace(LogoutEndpoint))
+                LogoutEndpoint = "/auth/logout";
+            if (string.IsNullOrWhiteSpace(RefreshEndpoint))
+                RefreshEndpoint = "/auth/refresh";
+        }
 
         public string BuildContentListUrl(
             IReadOnlyDictionary<string, string>? filters = null)

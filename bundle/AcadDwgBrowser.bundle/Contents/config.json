@@ -1,9 +1,10 @@
 ﻿{
     "ApiBaseUrl":  "https://dev3.constrtodo.ru:3005",
     "ApiKey":  "",
-    "LoginEndpoint":  "/login",
+    "LoginEndpoint":  "/auth/login",
     "SessionEndpoint":  "/auth/session",
     "LogoutEndpoint":  "/auth/logout",
+    "RefreshEndpoint":  "/auth/refresh",
     "ContentType":  "production_drawings",
     "ContentCategory":  "",
     "ContentListPath":  "/content/list/{type}",

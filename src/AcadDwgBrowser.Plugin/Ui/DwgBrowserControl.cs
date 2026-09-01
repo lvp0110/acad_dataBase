@@ -1073,7 +1073,8 @@ namespace AcadDwgBrowser.Plugin.Ui
         private async Task ReloadAsync()
         {
             if (_busy) return;
-            if (PluginApp.Session == null || !PluginApp.Session.IsAuthenticated)
+            var session = PluginApp.Session;
+            if (session == null || !session.IsAuthenticated)
             {
                 ShowLogin(true);
                 return;
@@ -1085,6 +1086,9 @@ namespace AcadDwgBrowser.Plugin.Ui
 
             try
             {
+                var auth = new AuthApiClient(PluginApp.Settings);
+                PluginApp.Session = await auth.EnsureFreshCsrfAsync(session, _cts.Token)
+                    .ConfigureAwait(true);
                 await RefreshCatalogListAsync(_cts.Token).ConfigureAwait(true);
             }
             catch (OperationCanceledException)

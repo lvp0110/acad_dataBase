@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -14,8 +15,8 @@ using AcadDwgBrowser.Core.Models;
 namespace AcadDwgBrowser.Core.Services
 {
     /// <summary>
-    /// ConstrTodo auth per swagger: POST /login, GET /auth/session, POST /auth/logout.
-    /// Login sets access_token and csrf_token cookies.
+    /// ConstrTodo auth per swagger: POST /auth/login, POST /auth/refresh, GET /auth/session, POST /auth/logout.
+    /// Login returns UserCredentials (access_token + refresh_token) and sets access_token / csrf_token cookies.
     /// </summary>
     public sealed class AuthApiClient : IAuthApiClient
     {
@@ -29,6 +30,7 @@ namespace AcadDwgBrowser.Core.Services
         public AuthApiClient(PluginSettings settings)
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+            _settings.NormalizeAuthEndpoints();
         }
 
         public async Task<AuthSession> LoginAsync(
@@ -106,44 +108,39 @@ namespace AcadDwgBrowser.Core.Services
                         var requestUri = response.RequestMessage?.RequestUri ?? baseUri;
 
                         ExtractTokens(response, cookies, baseUri, requestUri, responseText,
-                            out var access, out var csrf, out var cookieDump);
+                            out var access, out var refresh, out var csrf, out var cookieDump);
 
                         AuthDebugLog.Write(
                             "Login HTTP " + (int)response.StatusCode +
                             " cookies=[" + cookieDump + "]" +
                             " accessLen=" + (access?.Length ?? 0) +
+                            " refreshLen=" + (refresh?.Length ?? 0) +
                             " csrfLen=" + (csrf?.Length ?? 0) +
                             " body=" + Truncate(responseText, 400));
 
                         if (!response.IsSuccessStatusCode)
                             throw new InvalidOperationException(FormatApiError(response.StatusCode, responseText));
 
-                        var envelope = JsonSerializer.Deserialize<ApiEnvelope<UserFullInfo>>(responseText, JsonOptions);
-                        if (envelope != null && envelope.Code >= 400)
-                            throw new InvalidOperationException(FormatBodyError(envelope.Error, response.StatusCode));
+                        var session = new AuthSession { Email = email };
+                        OverlayCookieTokens(session, access, refresh, csrf);
+                        ApplyAuthPayload(session, responseText);
 
-                        var user = envelope?.Data;
-
-                        if (string.IsNullOrWhiteSpace(access) && user == null)
+                        if (!ApiHttpFactory.IsRealToken(session.AccessToken)
+                            && session.User == null
+                            && !session.HasRefreshToken)
                         {
                             throw new InvalidOperationException(
-                                "Вход не подтверждён: нет cookie access_token и нет данных пользователя. " +
+                                "Вход не подтверждён: нет access_token / refresh_token и нет данных пользователя. " +
                                 "Подробности: %LocalAppData%\\AcadDwgBrowser\\login-debug.log");
                         }
 
-                        if (string.IsNullOrWhiteSpace(access))
-                            access = "cookie-session";
+                        if (!ApiHttpFactory.IsRealToken(session.AccessToken) && session.User != null)
+                            session.AccessToken = "cookie-session";
 
-                        var session = new AuthSession
-                        {
-                            AccessToken = access!,
-                            CsrfToken = ApiHttpFactory.NormalizeToken(csrf) ?? string.Empty,
-                            Email = email,
-                            User = user
-                        };
                         AuthSessionStore.Save(session);
-                        AuthDebugLog.Write("Login OK user=" + (user?.Email ?? email) +
-                                           " csrfLen=" + session.CsrfToken.Length);
+                        AuthDebugLog.Write("Login OK user=" + (session.User?.Email ?? email) +
+                                           " csrfLen=" + session.CsrfToken.Length +
+                                           " refreshLen=" + (session.RefreshToken?.Length ?? 0));
                         return session;
                     }
                 }
@@ -165,37 +162,119 @@ namespace AcadDwgBrowser.Core.Services
                 AuthDebugLog.Write("Session HTTP " + (int)response.StatusCode + " body=" + Truncate(responseText, 300));
 
                 if (!response.IsSuccessStatusCode)
+                {
+                    if (IsAuthFailure(response.StatusCode) && session.HasRefreshToken)
+                    {
+                        AuthDebugLog.Write("Session unauthorized — trying refresh token");
+                        session = await RefreshSessionAsync(session, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            return await GetSessionAfterRefreshAsync(session, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            AuthDebugLog.Write("Session after refresh: " + ex.Message);
+                            return session;
+                        }
+                    }
+
+                    throw new InvalidOperationException(FormatApiError(response.StatusCode, responseText));
+                }
+
+                ApplyHttpTokens(session, http, response, responseText);
+                AuthSessionStore.Save(session);
+                return session;
+            }
+        }
+
+        public async Task<AuthSession> RefreshSessionAsync(
+            AuthSession session,
+            CancellationToken cancellationToken = default)
+        {
+            if (session == null) throw new ArgumentNullException(nameof(session));
+            if (!session.HasRefreshToken)
+                throw new InvalidOperationException("Нет refresh-токена. Войдите снова.");
+
+            using (var http = ApiHttpFactory.Create(_settings, session))
+            {
+                var refreshed = await PostRefreshAsync(http, session, cancellationToken).ConfigureAwait(false);
+                if (refreshed)
+                    return session;
+
+                // Some servers reject an expired Bearer; retry with refresh cookie/body only.
+                http.DefaultRequestHeaders.Remove("Authorization");
+                AuthDebugLog.Write("Refresh retry without Bearer");
+                if (await PostRefreshAsync(http, session, cancellationToken).ConfigureAwait(false))
+                    return session;
+
+                throw new InvalidOperationException("Не удалось обновить сессию по refresh-токену. Войдите снова.");
+            }
+        }
+
+        private async Task<bool> PostRefreshAsync(
+            HttpClient http,
+            AuthSession session,
+            CancellationToken cancellationToken)
+        {
+            var endpoint = string.IsNullOrWhiteSpace(_settings.RefreshEndpoint)
+                ? "auth/refresh"
+                : _settings.RefreshEndpoint.TrimStart('/');
+            var payload = new RefreshRequest { RefreshToken = session.RefreshToken.Trim() };
+            var json = JsonSerializer.Serialize(payload, JsonOptions);
+
+            using (var content = new StringContent(json, Encoding.UTF8, "application/json"))
+            {
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                using (var response = await http.PostAsync(endpoint, content, cancellationToken).ConfigureAwait(false))
+                {
+                    var responseText = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    AuthDebugLog.Write(
+                        "Refresh HTTP " + (int)response.StatusCode +
+                        " body=" + Truncate(responseText, 300));
+
+                    if (!response.IsSuccessStatusCode)
+                        return false;
+
+                    ApplyHttpTokens(session, http, response, responseText);
+                    if (!ApiHttpFactory.IsRealToken(session.AccessToken) && !session.HasRefreshToken)
+                        return false;
+
+                    AuthSessionStore.Save(session);
+                    AuthDebugLog.Write(
+                        "Refresh OK accessLen=" + (session.AccessToken?.Length ?? 0) +
+                        " refreshLen=" + (session.RefreshToken?.Length ?? 0) +
+                        " csrfLen=" + (session.CsrfToken?.Length ?? 0));
+                    return true;
+                }
+            }
+        }
+
+        private async Task<AuthSession> GetSessionAfterRefreshAsync(
+            AuthSession session,
+            CancellationToken cancellationToken)
+        {
+            using (var http = ApiHttpFactory.Create(_settings, session))
+            using (var response = await http.GetAsync(
+                       _settings.SessionEndpoint.TrimStart('/'),
+                       cancellationToken).ConfigureAwait(false))
+            {
+                var responseText = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                AuthDebugLog.Write(
+                    "Session after refresh HTTP " + (int)response.StatusCode +
+                    " body=" + Truncate(responseText, 300));
+
+                if (!response.IsSuccessStatusCode)
                     throw new InvalidOperationException(FormatApiError(response.StatusCode, responseText));
 
-                // Refresh tokens if server rotated cookies on /auth/session.
-                var baseUri = http.BaseAddress ?? new Uri(ApiHttpFactory.TrimSlash(_settings.ApiBaseUrl) + "/");
-                var requestUri = response.RequestMessage?.RequestUri ?? baseUri;
-                ExtractTokens(response, new CookieContainer(), baseUri, requestUri, responseText,
-                    out var access, out var csrf, out _);
-
-                if (ApiHttpFactory.IsRealToken(access))
-                    session.AccessToken = access!;
-
-                var normalizedCsrf = ApiHttpFactory.NormalizeToken(csrf);
-                if (!string.IsNullOrWhiteSpace(normalizedCsrf))
-                    session.CsrfToken = normalizedCsrf!;
-                else
-                    session.CsrfToken = ApiHttpFactory.NormalizeToken(session.CsrfToken) ?? session.CsrfToken;
-
-                var envelope = JsonSerializer.Deserialize<ApiEnvelope<UserFullInfo>>(responseText, JsonOptions);
-                if (envelope?.Data != null)
-                    session.User = envelope.Data;
-
-                if (!string.IsNullOrWhiteSpace(session.User?.Email))
-                    session.Email = session.User!.Email!;
-
+                ApplyHttpTokens(session, http, response, responseText);
                 AuthSessionStore.Save(session);
                 return session;
             }
         }
 
         /// <summary>
-        /// Ensures CSRF is present and normalized before POST/PUT. Client-side only.
+        /// Ensures CSRF is present and access token is not expired before POST/PUT.
         /// </summary>
         public async Task<AuthSession> EnsureFreshCsrfAsync(
             AuthSession session,
@@ -205,6 +284,18 @@ namespace AcadDwgBrowser.Core.Services
 
             session.CsrfToken = ApiHttpFactory.NormalizeToken(session.CsrfToken) ?? session.CsrfToken;
 
+            if (session.HasRefreshToken && session.IsAccessExpiring(TimeSpan.FromMinutes(1)))
+            {
+                try
+                {
+                    return await RefreshSessionAsync(session, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    AuthDebugLog.Write("Proactive refresh failed: " + ex.Message);
+                }
+            }
+
             try
             {
                 return await GetSessionAsync(session, cancellationToken).ConfigureAwait(false);
@@ -212,7 +303,18 @@ namespace AcadDwgBrowser.Core.Services
             catch (Exception ex)
             {
                 AuthDebugLog.Write("EnsureFreshCsrf fallback: " + ex.Message);
-                // Keep existing session if session probe fails — still use normalized CSRF.
+                if (session.HasRefreshToken)
+                {
+                    try
+                    {
+                        return await RefreshSessionAsync(session, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception refreshEx)
+                    {
+                        AuthDebugLog.Write("EnsureFreshCsrf refresh fallback: " + refreshEx.Message);
+                    }
+                }
+
                 AuthSessionStore.Save(session);
                 return session;
             }
@@ -248,21 +350,23 @@ namespace AcadDwgBrowser.Core.Services
             Uri requestUri,
             string responseText,
             out string? accessToken,
+            out string? refreshToken,
             out string? csrfToken,
             out string cookieDump)
         {
             accessToken = null;
+            refreshToken = null;
             csrfToken = null;
             var names = new List<string>();
 
-            CollectFromContainer(cookies, baseUri, names, ref accessToken, ref csrfToken);
-            CollectFromContainer(cookies, requestUri, names, ref accessToken, ref csrfToken);
+            CollectFromContainer(cookies, baseUri, names, ref accessToken, ref refreshToken, ref csrfToken);
+            CollectFromContainer(cookies, requestUri, names, ref accessToken, ref refreshToken, ref csrfToken);
 
             // Host without explicit path variants
             try
             {
                 var root = new Uri(baseUri.GetLeftPart(UriPartial.Authority) + "/");
-                CollectFromContainer(cookies, root, names, ref accessToken, ref csrfToken);
+                CollectFromContainer(cookies, root, names, ref accessToken, ref refreshToken, ref csrfToken);
             }
             catch
             {
@@ -272,13 +376,14 @@ namespace AcadDwgBrowser.Core.Services
             foreach (var raw in GetSetCookieHeaders(response))
             {
                 ParseCookiePair(raw, ApiHttpFactory.AccessTokenCookie, ref accessToken);
+                ParseCookiePair(raw, ApiHttpFactory.RefreshTokenCookie, ref refreshToken);
                 ParseCookiePair(raw, ApiHttpFactory.CsrfTokenCookie, ref csrfToken);
                 var name = raw.Split('=')[0].Trim();
                 if (!string.IsNullOrEmpty(name) && !names.Contains(name))
                     names.Add(name + "(hdr)");
             }
 
-            TryExtractTokensFromBody(responseText, ref accessToken, ref csrfToken);
+            TryExtractTokensFromBody(responseText, ref accessToken, ref refreshToken, ref csrfToken);
             cookieDump = names.Count == 0 ? "none" : string.Join(", ", names);
         }
 
@@ -287,6 +392,7 @@ namespace AcadDwgBrowser.Core.Services
             Uri uri,
             List<string> names,
             ref string? accessToken,
+            ref string? refreshToken,
             ref string? csrfToken)
         {
             try
@@ -300,6 +406,10 @@ namespace AcadDwgBrowser.Core.Services
                     if (string.Equals(c.Name, ApiHttpFactory.AccessTokenCookie, StringComparison.OrdinalIgnoreCase)
                         && string.IsNullOrWhiteSpace(accessToken))
                         accessToken = c.Value;
+
+                    if (string.Equals(c.Name, ApiHttpFactory.RefreshTokenCookie, StringComparison.OrdinalIgnoreCase)
+                        && string.IsNullOrWhiteSpace(refreshToken))
+                        refreshToken = c.Value;
 
                     if (string.Equals(c.Name, ApiHttpFactory.CsrfTokenCookie, StringComparison.OrdinalIgnoreCase)
                         && string.IsNullOrWhiteSpace(csrfToken))
@@ -370,12 +480,121 @@ namespace AcadDwgBrowser.Core.Services
             }
         }
 
-        private static void TryExtractTokensFromBody(string body, ref string? access, ref string? csrf)
+        private static void TryExtractTokensFromBody(
+            string body,
+            ref string? access,
+            ref string? refresh,
+            ref string? csrf)
         {
             if (string.IsNullOrWhiteSpace(access))
                 access = TryReadJsonString(body, "access_token") ?? TryReadJsonString(body, "token");
+            if (string.IsNullOrWhiteSpace(refresh))
+                refresh = TryReadJsonString(body, "refresh_token");
             if (string.IsNullOrWhiteSpace(csrf))
                 csrf = TryReadJsonString(body, "csrf_token");
+        }
+
+        private static void ApplyHttpTokens(
+            AuthSession session,
+            HttpClient http,
+            HttpResponseMessage response,
+            string responseText)
+        {
+            var baseUri = http.BaseAddress ?? new Uri("http://localhost/");
+            var requestUri = response.RequestMessage?.RequestUri ?? baseUri;
+            ExtractTokens(response, new CookieContainer(), baseUri, requestUri, responseText,
+                out var access, out var refresh, out var csrf, out _);
+            OverlayCookieTokens(session, access, refresh, csrf);
+            ApplyAuthPayload(session, responseText);
+        }
+
+        private static void ApplyAuthPayload(AuthSession session, string responseText)
+        {
+            if (string.IsNullOrWhiteSpace(responseText))
+                return;
+
+            try
+            {
+                var credentials = JsonSerializer.Deserialize<ApiEnvelope<UserCredentials>>(responseText, JsonOptions);
+                if (credentials != null && credentials.Code >= 400)
+                    throw new InvalidOperationException(FormatBodyError(credentials.Error, (HttpStatusCode)credentials.Code));
+
+                var data = credentials?.Data;
+                if (data != null
+                    && (ApiHttpFactory.IsRealToken(data.AccessToken)
+                        || ApiHttpFactory.IsRealToken(data.RefreshToken)
+                        || data.User != null))
+                {
+                    if (ApiHttpFactory.IsRealToken(data.AccessToken))
+                        session.AccessToken = data.AccessToken!.Trim();
+                    if (ApiHttpFactory.IsRealToken(data.RefreshToken))
+                        session.RefreshToken = data.RefreshToken!.Trim();
+                    if (data.User != null)
+                        session.User = data.User;
+
+                    var accessExp = ParseTimestamp(data.ExpiresAt);
+                    if (accessExp.HasValue)
+                        session.AccessExpiresAt = accessExp;
+                    var refreshExp = ParseTimestamp(data.RefreshExpiresAt);
+                    if (refreshExp.HasValue)
+                        session.RefreshExpiresAt = refreshExp;
+                }
+                else
+                {
+                    var legacy = JsonSerializer.Deserialize<ApiEnvelope<UserFullInfo>>(responseText, JsonOptions);
+                    if (legacy?.Data != null)
+                        session.User = legacy.Data;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch
+            {
+                // keep tokens already collected from cookies
+            }
+
+            if (!string.IsNullOrWhiteSpace(session.User?.Email))
+                session.Email = session.User!.Email!;
+        }
+
+        private static void OverlayCookieTokens(
+            AuthSession session,
+            string? access,
+            string? refresh,
+            string? csrf)
+        {
+            // Cookies rotate tokens; body UserCredentials overwrites access/refresh afterwards.
+            if (ApiHttpFactory.IsRealToken(access))
+                session.AccessToken = access!.Trim();
+            if (ApiHttpFactory.IsRealToken(refresh))
+                session.RefreshToken = refresh!.Trim();
+
+            var normalizedCsrf = ApiHttpFactory.NormalizeToken(csrf);
+            if (!string.IsNullOrWhiteSpace(normalizedCsrf))
+                session.CsrfToken = normalizedCsrf!;
+            else
+                session.CsrfToken = ApiHttpFactory.NormalizeToken(session.CsrfToken) ?? session.CsrfToken ?? string.Empty;
+        }
+
+        private static DateTimeOffset? ParseTimestamp(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+            if (DateTimeOffset.TryParse(
+                    value,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces,
+                    out var parsed))
+                return parsed;
+            return null;
+        }
+
+        private static bool IsAuthFailure(HttpStatusCode status)
+        {
+            var code = (int)status;
+            return code == 401 || code == 403;
         }
 
         private static string? TryReadJsonString(string json, string propertyName)

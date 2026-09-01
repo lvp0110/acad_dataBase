@@ -6,10 +6,11 @@ using AcadDwgBrowser.Core.Configuration;
 
 namespace AcadDwgBrowser.Core.Services
 {
-    /// <summary>Creates HttpClient with cookie session (access_token / csrf_token) from ConstrTodo auth.</summary>
+    /// <summary>Creates HttpClient with cookie session (access_token / refresh_token / csrf_token) from ConstrTodo auth.</summary>
     public static class ApiHttpFactory
     {
         public const string AccessTokenCookie = "access_token";
+        public const string RefreshTokenCookie = "refresh_token";
         public const string CsrfTokenCookie = "csrf_token";
         public const string CsrfHeaderName = "X-CSRF-Token";
 
@@ -65,6 +66,8 @@ namespace AcadDwgBrowser.Core.Services
                 var parts = new System.Collections.Generic.List<string>();
                 if (IsRealToken(session.AccessToken))
                     parts.Add(AccessTokenCookie + "=" + session.AccessToken.Trim());
+                if (IsRealToken(session.RefreshToken))
+                    parts.Add(RefreshTokenCookie + "=" + session.RefreshToken.Trim());
                 if (!string.IsNullOrWhiteSpace(csrf))
                     parts.Add(CsrfTokenCookie + "=" + csrf);
                 if (parts.Count > 0)

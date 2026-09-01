@@ -21,16 +21,34 @@ namespace AcadDwgBrowser.Core.Services
             if (!File.Exists(path))
             {
                 var defaults = new PluginSettings();
+                defaults.NormalizeAuthEndpoints();
                 Save(path, defaults);
                 return defaults;
             }
 
             var json = File.ReadAllText(path).TrimStart('\uFEFF');
             var settings = JsonSerializer.Deserialize<PluginSettings>(json, JsonOptions) ?? new PluginSettings();
+            var loginWasLegacy = string.Equals(
+                (settings.LoginEndpoint ?? string.Empty).Trim(),
+                "/login",
+                StringComparison.OrdinalIgnoreCase);
+            settings.NormalizeAuthEndpoints();
             if (string.IsNullOrWhiteSpace(settings.ApiBaseUrl)
                 || settings.ApiBaseUrl.IndexOf("example.com", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 settings.ApiBaseUrl = new PluginSettings().ApiBaseUrl;
+            }
+
+            if (loginWasLegacy)
+            {
+                try
+                {
+                    Save(path, settings);
+                }
+                catch
+                {
+                    // keep in-memory endpoints even if the file is locked
+                }
             }
 
             return settings;
